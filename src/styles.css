@@ -206,27 +206,24 @@ body {
   background: rgba(255, 255, 255, 0.055);
 }
 
-.earthlab-row-swatch,
+.earthlab-row-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+}
+
+.earthlab-row-swatch-svg {
+  display: block;
+  overflow: visible;
+}
+
 .earthlab-row-toggle {
   appearance: none;
-  border: 0;
-  background: transparent;
-  color: inherit;
   font: inherit;
-}
-
-.earthlab-row-swatch {
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border-radius: 999px;
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.16),
-    0 0 0 2px rgba(0, 0, 0, 0.7);
-  cursor: pointer;
-}
-
-.earthlab-row-toggle {
+  border: 0;
   flex: 0 0 auto;
   padding: 6px 12px;
   border: 1px solid transparent;
@@ -274,9 +271,9 @@ body {
   background: rgba(255, 255, 255, 0.028);
 }
 
-.earthlab-row-swatch:focus-visible,
 .earthlab-row-toggle:focus-visible,
-.earthlab-color-picker:focus-visible {
+.earthlab-color-hex:focus-visible,
+.earthlab-color-save:focus-visible {
   outline: 2px solid rgba(167, 226, 255, 0.9);
   outline-offset: 2px;
 }
@@ -286,9 +283,7 @@ body {
   display: grid;
   gap: 8px;
   margin-top: 4px;
-  padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.035);
+  padding: 4px 0 0;
 }
 
 .earthlab-row-style[hidden] {
@@ -312,17 +307,181 @@ body {
   text-transform: uppercase;
 }
 
+.earthlab-style-control-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, auto);
+  align-items: baseline;
+  gap: 12px;
+}
+
+.earthlab-row-style-value {
+  min-width: 72px;
+  color: var(--text);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .earthlab-style-control {
   display: grid;
   gap: 8px;
 }
 
-.earthlab-color-picker {
-  width: 100%;
-  height: 42px;
+.earthlab-color-control {
+  display: grid;
+  gap: 10px;
+}
+
+.earthlab-color-swatches {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: visible;
+  margin-top: -1px;
+  margin-left: -1px;
+  padding-top: 1px;
+  padding-left: 1px;
+  padding-bottom: 2px;
+}
+
+.earthlab-color-swatches::-webkit-scrollbar {
+  display: none;
+}
+
+.earthlab-color-swatch {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
   padding: 0;
-  border: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: var(--swatch-color, transparent);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.32);
+  cursor: pointer;
+}
+
+.earthlab-color-swatch.is-active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+
+.earthlab-color-swatch-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
+  color: rgba(239, 247, 251, 0.92);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow:
+    -1px -1px rgba(0, 0, 0, 0.9),
+    -1px 0 rgba(0, 0, 0, 0.9),
+    -1px 1px rgba(0, 0, 0, 0.9),
+    0 -1px rgba(0, 0, 0, 0.9),
+    0 1px rgba(0, 0, 0, 0.9),
+    1px -1px rgba(0, 0, 0, 0.9),
+    1px 0 rgba(0, 0, 0, 0.9),
+    1px 1px rgba(0, 0, 0, 0.9);
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease;
+}
+
+.earthlab-color-swatch-add.is-open {
+  transform: rotate(45deg);
+  border-color: rgba(255, 255, 255, 0.52);
+}
+
+.earthlab-color-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.earthlab-color-panel[hidden] {
+  display: none;
+}
+
+.earthlab-color-field {
+  position: relative;
+  width: 100%;
+  height: 132px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    linear-gradient(to top, #000 0%, transparent 100%),
+    linear-gradient(to right, #fff 0%, hsl(var(--picker-hue, 35) 100% 50%) 100%);
+  cursor: crosshair;
+}
+
+.earthlab-color-field-handle,
+.earthlab-color-hue-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #fff;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.62);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.earthlab-color-field-handle {
+  top: 50%;
+  left: 50%;
+}
+
+.earthlab-color-hue {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(
+    90deg,
+    #ff0000 0%,
+    #ffff00 16.6%,
+    #00ff00 33.3%,
+    #00ffff 50%,
+    #0000ff 66.6%,
+    #ff00ff 83.3%,
+    #ff0000 100%
+  );
+  cursor: ew-resize;
+}
+
+.earthlab-color-hue-handle {
+  top: 50%;
+  left: 0%;
+}
+
+.earthlab-color-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.earthlab-color-hex,
+.earthlab-color-save {
+  appearance: none;
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+}
+
+.earthlab-color-hex {
+  padding: 0 10px;
+  text-transform: lowercase;
+}
+
+.earthlab-color-save {
+  padding: 0 12px;
   cursor: pointer;
 }
 

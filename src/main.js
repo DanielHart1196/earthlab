@@ -2,6 +2,15 @@ import maplibregl from "maplibre-gl";
 import { LayerExtension } from "@deck.gl/core";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { GeoJsonLayer, SolidPolygonLayer } from "@deck.gl/layers";
+import {
+  buildDefaultLayerState,
+  getChannelTarget,
+  getLayerVisibility,
+  normalizeLayerState,
+  normalizeRenderOrder,
+} from "./core/layer-config.js";
+import { createPaletteStore, normalizeHexColor } from "./core/palette-store.js";
+import { mountColorControl } from "./ui/color-control.js";
 import "./styles.css";
 
 const LAND_LOW_URL = "/data/world-atlas/ne_110m_land.geojson";
@@ -16,42 +25,12 @@ const OCEAN_RING = [[
 
 const STORAGE_KEY = "earthlab.earth.style.v1";
 const HORIZON_CLIP_EPSILON = 0.002;
-const DEFAULT_RENDER_ORDER = [
-  "ocean.fill",
-  "graticules.line",
-  "land.line",
-  "land.fill",
+const PALETTE_BINDINGS = [
+  { controlId: "oceanColorControl", layerId: "ocean", channelId: "fill" },
+  { controlId: "graticulesColorControl", layerId: "graticules", channelId: "line" },
+  { controlId: "landFillColorControl", layerId: "land", channelId: "fill" },
+  { controlId: "landLineColorControl", layerId: "land", channelId: "line" },
 ];
-const TOP_ROW_TO_LAYER_IDS = {
-  ocean: ["ocean.fill"],
-  graticules: ["graticules.line"],
-  land: ["land.line", "land.fill"],
-};
-const LAYER_ID_TO_TOP_ROW = {
-  "ocean.fill": "ocean",
-  "graticules.line": "graticules",
-  "land.line": "land",
-  "land.fill": "land",
-};
-
-const DEFAULT_STYLE = {
-  oceanColor: "#2c6f92",
-  oceanOpacity: 100,
-  landFillColor: "#6eaa6e",
-  landFillOpacity: 100,
-  landLineColor: "#d9e4da",
-  landLineOpacity: 100,
-  landLineWidth: 1,
-  graticulesColor: "#8fa9bc",
-  graticulesOpacity: 100,
-  graticulesWidth: 1,
-  earthVisible: true,
-  oceanVisible: true,
-  landFillVisible: true,
-  landLineVisible: true,
-  graticulesVisible: true,
-  renderOrder: DEFAULT_RENDER_ORDER,
-};
 
 const state = {
   map: null,
@@ -59,13 +38,23 @@ const state = {
   landLow: null,
   land: null,
   graticules: null,
-  style: readStyleState(),
-  openStyleRow: null,
+  layerState: readLayerState(),
+  expandedRows: {
+    ocean: false,
+    graticules: false,
+    land: false,
+  },
+  activeChildPanelByRow: {
+    land: null,
+  },
   drag: null,
   panelCollapsed: false,
   earthLayersExpanded: true,
   earthExpanded: true,
 };
+
+const paletteStore = createPaletteStore();
+const paletteControls = new Map();
 
 function setBootStage(stage) {
   document.body.dataset.earthlabStage = stage;
@@ -166,55 +155,38 @@ const controls = {
   landChildren: document.getElementById("landChildren"),
   landFillStyle: document.getElementById("landFillStyle"),
   landLineStyle: document.getElementById("landLineStyle"),
-  oceanColorPicker: document.getElementById("oceanColorPicker"),
+  oceanColorValue: document.getElementById("oceanColorValue"),
   oceanOpacitySlider: document.getElementById("oceanOpacitySlider"),
-  graticulesColorPicker: document.getElementById("graticulesColorPicker"),
+  oceanOpacityValue: document.getElementById("oceanOpacityValue"),
+  graticulesColorValue: document.getElementById("graticulesColorValue"),
   graticulesOpacitySlider: document.getElementById("graticulesOpacitySlider"),
+  graticulesOpacityValue: document.getElementById("graticulesOpacityValue"),
   graticulesWidthSlider: document.getElementById("graticulesWidthSlider"),
-  landFillColorPicker: document.getElementById("landFillColorPicker"),
+  graticulesWidthValue: document.getElementById("graticulesWidthValue"),
+  landFillColorValue: document.getElementById("landFillColorValue"),
   landFillOpacitySlider: document.getElementById("landFillOpacitySlider"),
-  landLineColorPicker: document.getElementById("landLineColorPicker"),
+  landFillOpacityValue: document.getElementById("landFillOpacityValue"),
+  landLineColorValue: document.getElementById("landLineColorValue"),
   landLineOpacitySlider: document.getElementById("landLineOpacitySlider"),
+  landLineOpacityValue: document.getElementById("landLineOpacityValue"),
   landLineWidthSlider: document.getElementById("landLineWidthSlider"),
+  landLineWidthValue: document.getElementById("landLineWidthValue"),
 };
 
-function readStyleState() {
+function readLayerState() {
   try {
     const raw = window.localStorage?.getItem(STORAGE_KEY);
-    if (!raw) {
-      return { ...DEFAULT_STYLE };
-    }
-    const parsed = JSON.parse(raw);
-    const sharedLandVisible = parsed?.landVisible;
-    return {
-      ...DEFAULT_STYLE,
-      ...parsed,
-      landFillVisible: parsed?.landFillVisible ?? sharedLandVisible ?? DEFAULT_STYLE.landFillVisible,
-      landLineVisible: parsed?.landLineVisible ?? sharedLandVisible ?? DEFAULT_STYLE.landLineVisible,
-      renderOrder: normalizeRenderOrder(parsed?.renderOrder),
-    };
+    return normalizeLayerState(raw ? JSON.parse(raw) : buildDefaultLayerState());
   } catch {
-    return { ...DEFAULT_STYLE };
+    return buildDefaultLayerState();
   }
 }
 
-function normalizeRenderOrder(order) {
-  const source = Array.isArray(order) ? order : DEFAULT_RENDER_ORDER;
-  const allowed = new Set(DEFAULT_RENDER_ORDER);
-  const normalized = source.filter((layerId) => allowed.has(layerId));
-  DEFAULT_RENDER_ORDER.forEach((layerId) => {
-    if (!normalized.includes(layerId)) {
-      normalized.push(layerId);
-    }
-  });
-  return normalized;
-}
-
-function persistStyleState() {
+function persistLayerState() {
   try {
-    window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(state.style));
+    window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(state.layerState));
   } catch {
-    // Keep the runtime usable if storage is unavailable.
+    // Ignore storage failures to keep the runtime usable.
   }
 }
 
@@ -241,6 +213,10 @@ function percentToAlpha(percent = 100) {
   return Math.round((normalized / 100) * 255);
 }
 
+function clampOpacity(percent = 100) {
+  return Math.max(0, Math.min(100, Number(percent) || 0));
+}
+
 function loadJson(url) {
   return fetch(url).then((response) => {
     if (!response.ok) {
@@ -262,19 +238,35 @@ function getElementTarget(event) {
   return event.target instanceof Element ? event.target : null;
 }
 
-function isLandGroupVisible() {
-  return state.style.landFillVisible || state.style.landLineVisible;
+function getLayer(layerId) {
+  return state.layerState.layers[layerId];
 }
 
-function getLandChildOrder(renderOrder = state.style.renderOrder) {
+function getChannel(layerId, channelId) {
+  return getLayer(layerId)?.channels?.[channelId] ?? null;
+}
+
+function isLayerVisible(layerId) {
+  return getLayerVisibility(state.layerState, layerId);
+}
+
+function isLandGroupVisible() {
+  return Boolean(getChannel("land", "fill")?.visible || getChannel("land", "line")?.visible);
+}
+
+function getLandChildOrder(renderOrder = state.layerState.order) {
   return normalizeRenderOrder(renderOrder).filter((layerId) => layerId.startsWith("land."));
 }
 
-function getTopRowOrder(renderOrder = state.style.renderOrder) {
+function getTopRowOrder(renderOrder = state.layerState.order) {
   const topRowIds = [];
-  normalizeRenderOrder(renderOrder).forEach((layerId) => {
-    const topRowId = LAYER_ID_TO_TOP_ROW[layerId];
-    if (topRowId && !topRowIds.includes(topRowId)) {
+  normalizeRenderOrder(renderOrder).forEach((renderLayerId) => {
+    const target = getChannelTarget(renderLayerId);
+    if (!target) {
+      return;
+    }
+    const topRowId = target.layerId;
+    if (!topRowIds.includes(topRowId)) {
       topRowIds.push(topRowId);
     }
   });
@@ -309,39 +301,245 @@ function rebuildRenderOrderFromDom() {
       return;
     }
 
-    TOP_ROW_TO_LAYER_IDS[rowId]?.forEach((layerId) => nextOrder.push(layerId));
+    if (rowId === "ocean") nextOrder.push("ocean.fill");
+    if (rowId === "graticules") nextOrder.push("graticules.line");
   });
 
-  state.style.renderOrder = normalizeRenderOrder(nextOrder);
+  state.layerState.order = normalizeRenderOrder(nextOrder);
+}
+
+function svgEl(name) {
+  return document.createElementNS("http://www.w3.org/2000/svg", name);
+}
+
+function getLegendSpec(rowId) {
+  if (rowId === "earth") {
+    return null;
+  }
+
+  if (rowId === "ocean") {
+    const fill = getChannel("ocean", "fill");
+    return {
+      kind: "polygon",
+      fillColor: fill?.color ?? "#ffffff",
+      fillOpacity: fill?.visible ? fill.opacity : 0,
+      lineColor: "#ffffff",
+      lineOpacity: 0,
+      lineWidth: 0,
+    };
+  }
+
+  if (rowId === "land") {
+    const fill = getChannel("land", "fill");
+    const line = getChannel("land", "line");
+    const drawOrder = [...getLandChildOrder()]
+      .reverse()
+      .map((layerId) => (layerId === "land.fill" ? "fill" : "line"));
+    return {
+      kind: "polygon",
+      fillColor: fill?.color ?? "#ffffff",
+      fillOpacity: fill?.visible ? fill.opacity : 0,
+      lineColor: line?.color ?? "#ffffff",
+      lineOpacity: line?.visible ? line.opacity : 0,
+      lineWidth: line?.visible ? line.width : 0,
+      drawOrder,
+    };
+  }
+
+  if (rowId === "landFill") {
+    const fill = getChannel("land", "fill");
+    return {
+      kind: "polygon",
+      fillColor: fill?.color ?? "#ffffff",
+      fillOpacity: fill?.visible ? fill.opacity : 0,
+      lineColor: "#ffffff",
+      lineOpacity: 0,
+      lineWidth: 0,
+    };
+  }
+
+  if (rowId === "landLine") {
+    const line = getChannel("land", "line");
+    return {
+      kind: "line",
+      color: line?.color ?? "#ffffff",
+      opacity: line?.visible ? line.opacity : 0,
+      width: line?.visible ? line.width : 0,
+    };
+  }
+
+  if (rowId === "graticules") {
+    const line = getChannel("graticules", "line");
+    return {
+      kind: "line",
+      color: line?.color ?? "#ffffff",
+      opacity: line?.visible ? line.opacity : 0,
+      width: line?.visible ? line.width : 0,
+    };
+  }
+
+  return null;
+}
+
+function createLegendSvg(spec) {
+  const svg = svgEl("svg");
+  svg.setAttribute("viewBox", "0 0 42 18");
+  svg.setAttribute("width", "42");
+  svg.setAttribute("height", "18");
+  svg.classList.add("earthlab-row-swatch-svg");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  if (!spec) {
+    return svg;
+  }
+
+  if (spec.kind === "line") {
+    const line = svgEl("line");
+    line.setAttribute("x1", "3");
+    line.setAttribute("x2", "39");
+    line.setAttribute("y1", "9");
+    line.setAttribute("y2", "9");
+    line.setAttribute("stroke", normalizeHexColor(spec.color) ?? "#ffffff");
+    line.setAttribute("stroke-opacity", String(clampOpacity(spec.opacity) / 100));
+    line.setAttribute("stroke-width", String(Math.max(1, Number(spec.width) || 0)));
+    line.setAttribute("stroke-linecap", "round");
+    svg.append(line);
+    return svg;
+  }
+
+  if (spec.kind === "point") {
+    const circle = svgEl("circle");
+    circle.setAttribute("cx", "21");
+    circle.setAttribute("cy", "9");
+    circle.setAttribute("r", String(Math.max(3, Math.min(6, Number(spec.radius) || 4))));
+    circle.setAttribute("fill", normalizeHexColor(spec.fillColor) ?? "#ffffff");
+    circle.setAttribute("fill-opacity", String(clampOpacity(spec.fillOpacity) / 100));
+    circle.setAttribute("stroke", normalizeHexColor(spec.lineColor) ?? "#ffffff");
+    circle.setAttribute("stroke-opacity", String(clampOpacity(spec.lineOpacity) / 100));
+    circle.setAttribute("stroke-width", String(Math.max(0, Number(spec.lineWidth) || 0)));
+    svg.append(circle);
+    return svg;
+  }
+
+  const rect = svgEl("rect");
+  const drawOrder = Array.isArray(spec.drawOrder) && spec.drawOrder.length
+    ? spec.drawOrder
+    : ["fill", "line"];
+
+  drawOrder.forEach((part) => {
+    const shape = svgEl("rect");
+    shape.setAttribute("x", "8");
+    shape.setAttribute("y", "2");
+    shape.setAttribute("width", "26");
+    shape.setAttribute("height", "14");
+    shape.setAttribute("rx", "2.5");
+    shape.setAttribute("ry", "2.5");
+
+    if (part === "line") {
+      shape.setAttribute("fill", "none");
+      shape.setAttribute("stroke", normalizeHexColor(spec.lineColor) ?? "#ffffff");
+      shape.setAttribute("stroke-opacity", String(clampOpacity(spec.lineOpacity) / 100));
+      shape.setAttribute("stroke-width", String(Math.max(0, Number(spec.lineWidth) || 0)));
+    } else {
+      shape.setAttribute("fill", normalizeHexColor(spec.fillColor) ?? "#ffffff");
+      shape.setAttribute("fill-opacity", String(clampOpacity(spec.fillOpacity) / 100));
+      shape.setAttribute("stroke", "none");
+    }
+
+    svg.append(shape);
+  });
+  return svg;
+}
+
+function renderLegendButton(button, spec) {
+  if (!button) {
+    return;
+  }
+  button.replaceChildren(createLegendSvg(spec));
+}
+
+function renderPaletteControls() {
+  paletteControls.forEach((control) => control.render());
+}
+
+function mountPaletteControls() {
+  PALETTE_BINDINGS.forEach(({ controlId, layerId, channelId }) => {
+    const mount = document.getElementById(controlId);
+    if (!mount || paletteControls.has(controlId)) {
+      return;
+    }
+    const control = mountColorControl({
+      mount,
+      initialValue: getChannel(layerId, channelId)?.color,
+      paletteStore,
+      onChange(nextColor) {
+        const channel = getChannel(layerId, channelId);
+        if (!channel) {
+          return;
+        }
+        channel.color = nextColor;
+        persistLayerState();
+        updateOverlay();
+      },
+    });
+    paletteControls.set(controlId, control);
+  });
+  renderPaletteControls();
 }
 
 function syncControlsFromState() {
-  controls.oceanSwatch.style.background = state.style.oceanColor;
-  controls.graticulesSwatch.style.background = state.style.graticulesColor;
-  controls.landSwatch.style.background = `linear-gradient(135deg, ${state.style.landFillColor} 0 62%, ${state.style.landLineColor} 62% 100%)`;
-  controls.landFillSwatch.style.background = state.style.landFillColor;
-  controls.landLineSwatch.style.background = state.style.landLineColor;
-  controls.earthToggle.setAttribute("aria-checked", String(state.style.earthVisible));
-  controls.oceanToggle.setAttribute("aria-checked", String(state.style.oceanVisible));
-  controls.graticulesToggle.setAttribute("aria-checked", String(state.style.graticulesVisible));
+  const oceanFill = getChannel("ocean", "fill");
+  const graticulesLine = getChannel("graticules", "line");
+  const landFill = getChannel("land", "fill");
+  const landLine = getChannel("land", "line");
+
+  renderLegendButton(controls.earthSwatch, getLegendSpec("earth"));
+  renderLegendButton(controls.oceanSwatch, getLegendSpec("ocean"));
+  renderLegendButton(controls.graticulesSwatch, getLegendSpec("graticules"));
+  renderLegendButton(controls.landSwatch, getLegendSpec("land"));
+  renderLegendButton(controls.landFillSwatch, getLegendSpec("landFill"));
+  renderLegendButton(controls.landLineSwatch, getLegendSpec("landLine"));
+
+  controls.earthToggle.setAttribute("aria-checked", String(getLayer("earth")?.visible !== false));
+  controls.oceanToggle.setAttribute("aria-checked", String(getLayer("ocean")?.visible !== false));
+  controls.graticulesToggle.setAttribute("aria-checked", String(getLayer("graticules")?.visible !== false));
   controls.landToggle.setAttribute("aria-checked", String(isLandGroupVisible()));
-  controls.landFillToggle.setAttribute("aria-checked", String(state.style.landFillVisible));
-  controls.landLineToggle.setAttribute("aria-checked", String(state.style.landLineVisible));
-  controls.oceanStyle.hidden = state.openStyleRow !== "ocean";
-  controls.graticulesStyle.hidden = state.openStyleRow !== "graticules";
-  controls.landChildren.hidden = !["land", "landFill", "landLine"].includes(state.openStyleRow) && state.drag?.scope !== "land";
-  controls.landFillStyle.hidden = state.openStyleRow !== "landFill";
-  controls.landLineStyle.hidden = state.openStyleRow !== "landLine";
-  controls.oceanColorPicker.value = state.style.oceanColor;
-  controls.oceanOpacitySlider.value = String(state.style.oceanOpacity);
-  controls.graticulesColorPicker.value = state.style.graticulesColor;
-  controls.graticulesOpacitySlider.value = String(state.style.graticulesOpacity);
-  controls.graticulesWidthSlider.value = String(state.style.graticulesWidth);
-  controls.landFillColorPicker.value = state.style.landFillColor;
-  controls.landFillOpacitySlider.value = String(state.style.landFillOpacity);
-  controls.landLineColorPicker.value = state.style.landLineColor;
-  controls.landLineOpacitySlider.value = String(state.style.landLineOpacity);
-  controls.landLineWidthSlider.value = String(state.style.landLineWidth);
+  controls.landFillToggle.setAttribute("aria-checked", String(getChannel("land", "fill")?.visible !== false));
+  controls.landLineToggle.setAttribute("aria-checked", String(getChannel("land", "line")?.visible !== false));
+
+  controls.oceanStyle.hidden = !state.expandedRows.ocean;
+  controls.graticulesStyle.hidden = !state.expandedRows.graticules;
+  controls.landChildren.hidden = !state.expandedRows.land && state.drag?.scope !== "land";
+  controls.landFillStyle.hidden = state.activeChildPanelByRow.land !== "fill";
+  controls.landLineStyle.hidden = state.activeChildPanelByRow.land !== "line";
+
+  controls.oceanOpacitySlider.value = String(oceanFill?.opacity ?? 100);
+
+  controls.graticulesOpacitySlider.value = String(graticulesLine?.opacity ?? 100);
+  controls.graticulesWidthSlider.value = String(graticulesLine?.width ?? 1);
+
+  controls.landFillOpacitySlider.value = String(landFill?.opacity ?? 100);
+
+  controls.landLineOpacitySlider.value = String(landLine?.opacity ?? 100);
+  controls.landLineWidthSlider.value = String(landLine?.width ?? 1);
+
+  controls.oceanColorValue.textContent = oceanFill?.color ?? "";
+  controls.oceanOpacityValue.textContent = `${Math.round(Number(oceanFill?.opacity ?? 100))}%`;
+  controls.graticulesColorValue.textContent = graticulesLine?.color ?? "";
+  controls.graticulesOpacityValue.textContent = `${Math.round(Number(graticulesLine?.opacity ?? 100))}%`;
+  controls.graticulesWidthValue.textContent = `${Number(graticulesLine?.width ?? 1).toFixed(1)} px`;
+  controls.landFillColorValue.textContent = landFill?.color ?? "";
+  controls.landFillOpacityValue.textContent = `${Math.round(Number(landFill?.opacity ?? 100))}%`;
+  controls.landLineColorValue.textContent = landLine?.color ?? "";
+  controls.landLineOpacityValue.textContent = `${Math.round(Number(landLine?.opacity ?? 100))}%`;
+  controls.landLineWidthValue.textContent = `${Number(landLine?.width ?? 1).toFixed(1)} px`;
+
+  paletteControls.get("oceanColorControl")?.setValue(oceanFill?.color);
+  paletteControls.get("graticulesColorControl")?.setValue(graticulesLine?.color);
+  paletteControls.get("landFillColorControl")?.setValue(landFill?.color);
+  paletteControls.get("landLineColorControl")?.setValue(landLine?.color);
+  renderPaletteControls();
 }
 
 function updateStatus() {
@@ -355,13 +553,18 @@ function buildLayers() {
     extensions: [hemisphereClipExtension],
   };
 
+  const oceanFill = getChannel("ocean", "fill");
+  const graticulesLine = getChannel("graticules", "line");
+  const landFill = getChannel("land", "fill");
+  const landLine = getChannel("land", "line");
+
   const layerBuilders = {
     "ocean.fill": () => new SolidPolygonLayer({
       id: "earthlab-ocean",
       data: [{ polygon: OCEAN_RING }],
       getPolygon: (entry) => entry.polygon,
-      getFillColor: toDeckColor(state.style.oceanColor, percentToAlpha(state.style.oceanOpacity)),
-      visible: state.style.earthVisible && state.style.oceanVisible,
+      getFillColor: toDeckColor(oceanFill?.color, percentToAlpha(oceanFill?.opacity)),
+      visible: isLayerVisible("ocean") && oceanFill?.visible !== false,
       pickable: false,
       parameters: { depthTest: false },
     }),
@@ -371,13 +574,13 @@ function buildLayers() {
       data: state.graticules ?? { type: "FeatureCollection", features: [] },
       filled: false,
       stroked: true,
-      getLineColor: toDeckColor(state.style.graticulesColor, percentToAlpha(state.style.graticulesOpacity)),
-      getLineWidth: Number(state.style.graticulesWidth) || 0,
+      getLineColor: toDeckColor(graticulesLine?.color, percentToAlpha(graticulesLine?.opacity)),
+      getLineWidth: Number(graticulesLine?.width) || 0,
       lineWidthUnits: "pixels",
-      lineWidthMinPixels: Number(state.style.graticulesWidth) || 0,
+      lineWidthMinPixels: Number(graticulesLine?.width) || 0,
       jointRounded: true,
       capRounded: true,
-      visible: state.style.earthVisible && state.style.graticulesVisible,
+      visible: isLayerVisible("graticules") && graticulesLine?.visible !== false,
       pickable: false,
       parameters: { depthTest: false },
     }),
@@ -387,13 +590,13 @@ function buildLayers() {
       data: state.land ?? { type: "FeatureCollection", features: [] },
       filled: false,
       stroked: true,
-      getLineColor: toDeckColor(state.style.landLineColor, percentToAlpha(state.style.landLineOpacity)),
-      getLineWidth: Number(state.style.landLineWidth) || 0,
+      getLineColor: toDeckColor(landLine?.color, percentToAlpha(landLine?.opacity)),
+      getLineWidth: Number(landLine?.width) || 0,
       lineWidthUnits: "pixels",
-      lineWidthMinPixels: Number(state.style.landLineWidth) || 0,
+      lineWidthMinPixels: Number(landLine?.width) || 0,
       jointRounded: true,
       capRounded: true,
-      visible: state.style.earthVisible && state.style.landLineVisible,
+      visible: isLayerVisible("land") && landLine?.visible !== false,
       pickable: false,
       parameters: { depthTest: false },
     }),
@@ -403,14 +606,14 @@ function buildLayers() {
       data: state.land ?? { type: "FeatureCollection", features: [] },
       filled: true,
       stroked: false,
-      getFillColor: toDeckColor(state.style.landFillColor, percentToAlpha(state.style.landFillOpacity)),
-      visible: state.style.earthVisible && state.style.landFillVisible,
+      getFillColor: toDeckColor(landFill?.color, percentToAlpha(landFill?.opacity)),
+      visible: isLayerVisible("land") && landFill?.visible !== false,
       pickable: false,
       parameters: { depthTest: false },
     }),
   };
 
-  return [...normalizeRenderOrder(state.style.renderOrder)]
+  return [...normalizeRenderOrder(state.layerState.order)]
     .reverse()
     .map((layerId) => layerBuilders[layerId]?.())
     .filter(Boolean);
@@ -436,11 +639,31 @@ function syncEarthLayers() {
   controls.earthLayersBtn.setAttribute("aria-label", state.earthLayersExpanded ? "Collapse earth layers" : "Expand earth layers");
   controls.earthLayersBtn.dataset.active = String(state.earthLayersExpanded);
   controls.earthChildren.hidden = !state.earthExpanded;
-  controls.earthToggle.setAttribute("aria-checked", String(state.style.earthVisible));
+  controls.earthToggle.setAttribute("aria-checked", String(getLayer("earth")?.visible !== false));
 }
 
 function toggleStyleRow(rowId) {
-  state.openStyleRow = state.openStyleRow === rowId ? null : rowId;
+  if (rowId === "ocean" || rowId === "graticules") {
+    state.expandedRows[rowId] = !state.expandedRows[rowId];
+    syncControlsFromState();
+    return;
+  }
+
+  if (rowId === "land") {
+    const nextExpanded = !state.expandedRows.land;
+    state.expandedRows.land = nextExpanded;
+    if (!nextExpanded) {
+      state.activeChildPanelByRow.land = null;
+    }
+    syncControlsFromState();
+    return;
+  }
+
+  if (rowId === "landFill" || rowId === "landLine") {
+    const panelId = rowId === "landFill" ? "fill" : "line";
+    state.expandedRows.land = true;
+    state.activeChildPanelByRow.land = state.activeChildPanelByRow.land === panelId ? null : panelId;
+  }
   syncControlsFromState();
 }
 
@@ -489,10 +712,10 @@ function moveDraggedRow(drag, direction) {
   else drag.startY += adjacentHeight;
 
   rebuildRenderOrderFromDom();
-  const orderKey = state.style.renderOrder.join("|");
+  const orderKey = state.layerState.order.join("|");
   if (orderKey !== drag.lastOrderKey) {
     drag.lastOrderKey = orderKey;
-    persistStyleState();
+    persistLayerState();
     updateOverlay();
   }
 
@@ -512,7 +735,20 @@ function bindRowReordering() {
 
   function activateDrag(drag) {
     drag.dragging = true;
-    if (state.openStyleRow === drag.rowElement.dataset.rowId) state.openStyleRow = null;
+    const rowId = drag.rowElement.dataset.rowId;
+    if (rowId === "ocean" || rowId === "graticules") {
+      state.expandedRows[rowId] = false;
+    }
+    if (rowId === "land") {
+      state.expandedRows.land = false;
+      state.activeChildPanelByRow.land = null;
+    }
+    if (rowId === "landFill" && state.activeChildPanelByRow.land === "fill") {
+      state.activeChildPanelByRow.land = null;
+    }
+    if (rowId === "landLine" && state.activeChildPanelByRow.land === "line") {
+      state.activeChildPanelByRow.land = null;
+    }
     syncControlsFromState();
     if (drag.scope === "land") controls.landChildren.hidden = false;
     drag.rowElement.classList.add("earthlab-row-dragging");
@@ -540,7 +776,7 @@ function bindRowReordering() {
       if (
         target.closest(".earthlab-row-style") ||
         target.closest(".earthlab-row-toggle") ||
-        target.closest(".earthlab-row-swatch")
+        target.closest(".earthlab-color-swatch")
       ) return;
 
       const pending = {
@@ -564,16 +800,16 @@ function bindRowReordering() {
           activateDrag(pending);
         }, 250);
 
-        const cancelOnMove = (e) => {
-          if (e.pointerId !== pending.pointerId) return;
-          const dist = Math.hypot(e.clientX - pending.startX, e.clientY - pending.startY);
+        const cancelOnMove = (moveEvent) => {
+          if (moveEvent.pointerId !== pending.pointerId) return;
+          const dist = Math.hypot(moveEvent.clientX - pending.startX, moveEvent.clientY - pending.startY);
           if (dist > 8) {
             cancelHold();
             document.removeEventListener("pointermove", cancelOnMove);
           }
         };
-        const cancelOnUp = (e) => {
-          if (e.pointerId !== pending.pointerId) return;
+        const cancelOnUp = (upEvent) => {
+          if (upEvent.pointerId !== pending.pointerId) return;
           cancelHold();
           document.removeEventListener("pointermove", cancelOnMove);
           document.removeEventListener("pointerup", cancelOnUp);
@@ -598,7 +834,6 @@ function bindRowReordering() {
 
     if (!drag.dragging) return;
 
-    // Reset transform before measuring so getBoundingClientRect gives layout position
     drag.rowElement.style.transform = "";
 
     if (drag.provisional) {
@@ -648,7 +883,6 @@ function bindRowReordering() {
       }
     }
 
-    // Apply visual follow-finger transform
     drag.rowElement.style.transform = `translateY(${event.clientY - drag.startY}px)`;
   });
 
@@ -682,67 +916,77 @@ function bindRowReordering() {
   });
 }
 
+function setLayerVisible(layerId, visible) {
+  const layer = getLayer(layerId);
+  if (layer) {
+    layer.visible = visible;
+  }
+}
+
+function setChannelVisible(layerId, channelId, visible) {
+  const channel = getChannel(layerId, channelId);
+  if (channel) {
+    channel.visible = visible;
+  }
+}
+
+function updateLandVisibilityFromChannels() {
+  setLayerVisible("land", isLandGroupVisible());
+}
+
 function bindControls() {
   [
-    ["oceanSwatch", "ocean"],
-    ["graticulesSwatch", "graticules"],
-    ["landSwatch", "land"],
-    ["landFillSwatch", "landFill"],
-    ["landLineSwatch", "landLine"],
-    ["earthSwatch", "earth"],
-  ].forEach(([controlKey, rowId]) => {
-    controls[controlKey].addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleStyleRow(rowId);
-    });
-  });
-
-  [
     ["earthToggle", () => {
-      state.style.earthVisible = !state.style.earthVisible;
+      setLayerVisible("earth", !(getLayer("earth")?.visible !== false));
     }],
     ["oceanToggle", () => {
-      state.style.oceanVisible = !state.style.oceanVisible;
+      const nextVisible = !(getLayer("ocean")?.visible !== false);
+      setLayerVisible("ocean", nextVisible);
+      setChannelVisible("ocean", "fill", nextVisible);
     }],
     ["graticulesToggle", () => {
-      state.style.graticulesVisible = !state.style.graticulesVisible;
+      const nextVisible = !(getLayer("graticules")?.visible !== false);
+      setLayerVisible("graticules", nextVisible);
+      setChannelVisible("graticules", "line", nextVisible);
     }],
     ["landToggle", () => {
       const nextVisible = !isLandGroupVisible();
-      state.style.landFillVisible = nextVisible;
-      state.style.landLineVisible = nextVisible;
+      setLayerVisible("land", nextVisible);
+      setChannelVisible("land", "fill", nextVisible);
+      setChannelVisible("land", "line", nextVisible);
     }],
     ["landFillToggle", () => {
-      state.style.landFillVisible = !state.style.landFillVisible;
+      setChannelVisible("land", "fill", !(getChannel("land", "fill")?.visible !== false));
+      updateLandVisibilityFromChannels();
     }],
     ["landLineToggle", () => {
-      state.style.landLineVisible = !state.style.landLineVisible;
+      setChannelVisible("land", "line", !(getChannel("land", "line")?.visible !== false));
+      updateLandVisibilityFromChannels();
     }],
   ].forEach(([controlKey, onToggle]) => {
     controls[controlKey].addEventListener("click", (event) => {
       event.stopPropagation();
       onToggle();
-      persistStyleState();
+      persistLayerState();
       updateOverlay();
     });
   });
 
   [
-    ["oceanColorPicker", "oceanColor"],
-    ["oceanOpacitySlider", "oceanOpacity"],
-    ["graticulesColorPicker", "graticulesColor"],
-    ["graticulesOpacitySlider", "graticulesOpacity"],
-    ["graticulesWidthSlider", "graticulesWidth"],
-    ["landFillColorPicker", "landFillColor"],
-    ["landFillOpacitySlider", "landFillOpacity"],
-    ["landLineColorPicker", "landLineColor"],
-    ["landLineOpacitySlider", "landLineOpacity"],
-    ["landLineWidthSlider", "landLineWidth"],
-  ].forEach(([controlKey, styleKey]) => {
+    ["oceanOpacitySlider", { layerId: "ocean", channelId: "fill", key: "opacity", numeric: true }],
+    ["graticulesOpacitySlider", { layerId: "graticules", channelId: "line", key: "opacity", numeric: true }],
+    ["graticulesWidthSlider", { layerId: "graticules", channelId: "line", key: "width", numeric: true }],
+    ["landFillOpacitySlider", { layerId: "land", channelId: "fill", key: "opacity", numeric: true }],
+    ["landLineOpacitySlider", { layerId: "land", channelId: "line", key: "opacity", numeric: true }],
+    ["landLineWidthSlider", { layerId: "land", channelId: "line", key: "width", numeric: true }],
+  ].forEach(([controlKey, target]) => {
     controls[controlKey].addEventListener("input", (event) => {
-      const { value, type } = event.currentTarget;
-      state.style[styleKey] = type === "range" ? Number(value) : value;
-      persistStyleState();
+      const channel = getChannel(target.layerId, target.channelId);
+      if (!channel) {
+        return;
+      }
+      channel[target.key] = target.numeric ? Number(event.currentTarget.value) : event.currentTarget.value;
+      persistLayerState();
       updateOverlay();
     });
   });
@@ -792,18 +1036,33 @@ function bindControls() {
     const target = getElementTarget(event);
     if (!target) return;
 
+    let withinPaletteControl = false;
+    paletteControls.forEach((control) => {
+      if (control.contains(target)) {
+        withinPaletteControl = true;
+      } else {
+        control.close();
+      }
+    });
+
     if (!controls.panel.contains(target)) {
       if (!state.panelCollapsed) {
         state.panelCollapsed = true;
         syncPanelCollapsed();
       }
-      state.openStyleRow = null;
+      state.expandedRows.ocean = false;
+      state.expandedRows.graticules = false;
+      state.expandedRows.land = false;
+      state.activeChildPanelByRow.land = null;
       syncControlsFromState();
       return;
     }
 
-    if (!controls.rows.contains(target)) {
-      state.openStyleRow = null;
+    if (!controls.rows.contains(target) && !withinPaletteControl) {
+      state.expandedRows.ocean = false;
+      state.expandedRows.graticules = false;
+      state.expandedRows.land = false;
+      state.activeChildPanelByRow.land = null;
       syncControlsFromState();
     }
   });
@@ -817,6 +1076,7 @@ async function bootstrap() {
   syncControlsFromState();
   syncPanelCollapsed();
   syncEarthLayers();
+  mountPaletteControls();
   bindControls();
   bindReloadControls();
 
@@ -913,7 +1173,7 @@ function bindReloadControls() {
     localStorage.clear();
     if ("caches" in window) {
       const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
+      await Promise.all(keys.map((key) => caches.delete(key)));
     }
     window.location.reload(true);
   });

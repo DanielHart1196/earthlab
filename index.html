@@ -88,93 +88,123 @@
         <div class="earthlab-layer-stack">
           <div class="earthlab-rows" id="earthRows">
             <article class="earthlab-row earthlab-row-parent" data-row-id="earth" data-reorder-id="earth" data-reorder-scope="top">
-              <button class="earthlab-row-swatch" id="earthSwatch" type="button" aria-label="Set earth colors"></button>
+              <span class="earthlab-row-swatch" id="earthSwatch" aria-hidden="true"></span>
               <button class="earthlab-row-toggle" id="earthToggle" type="button" role="checkbox" aria-checked="true">
                 Earth
               </button>
               <span class="earthlab-row-slot" aria-hidden="true"></span>
               <div class="earthlab-row-children" id="earthChildren">
             <article class="earthlab-row earthlab-row-parent" data-row-id="land" data-reorder-id="land" data-reorder-scope="earth">
-              <button class="earthlab-row-swatch" id="landSwatch" type="button" aria-label="Set land colors"></button>
+              <span class="earthlab-row-swatch" id="landSwatch" aria-hidden="true"></span>
               <button class="earthlab-row-toggle" id="landToggle" type="button" role="checkbox" aria-checked="true">
                 Land
               </button>
               <span class="earthlab-row-slot" aria-hidden="true"></span>
               <div class="earthlab-row-children" id="landChildren" hidden>
                 <article class="earthlab-row earthlab-row-child" data-row-id="landFill" data-layer-id="land.fill" data-reorder-id="land.fill" data-reorder-scope="land">
-                  <button class="earthlab-row-swatch" id="landFillSwatch" type="button" aria-label="Set land fill colors"></button>
+                  <span class="earthlab-row-swatch" id="landFillSwatch" aria-hidden="true"></span>
                   <button class="earthlab-row-toggle" id="landFillToggle" type="button" role="checkbox" aria-checked="true">
                     Fill
                   </button>
                   <span class="earthlab-row-slot" aria-hidden="true"></span>
                   <div class="earthlab-row-style" id="landFillStyle" hidden>
                     <div class="earthlab-style-control">
-                      <label class="earthlab-row-style-label" for="landFillColorPicker">Fill color</label>
-                      <input class="earthlab-color-picker" type="color" id="landFillColorPicker" value="#6eaa6e" />
+                      <div class="earthlab-style-control-header">
+                      <div class="earthlab-row-style-label">Color</div>
+                        <div class="earthlab-row-style-value" id="landFillColorValue"></div>
+                      </div>
+                      <div id="landFillColorControl"></div>
                     </div>
                     <div class="earthlab-style-control">
-                      <label class="earthlab-row-style-label" for="landFillOpacitySlider">Fill opacity</label>
+                      <div class="earthlab-style-control-header">
+                        <label class="earthlab-row-style-label" for="landFillOpacitySlider">Opacity</label>
+                        <div class="earthlab-row-style-value" id="landFillOpacityValue"></div>
+                      </div>
                       <input class="earthlab-range" type="range" id="landFillOpacitySlider" min="0" max="100" step="1" value="100" />
                     </div>
                   </div>
                 </article>
                 <article class="earthlab-row earthlab-row-child" data-row-id="landLine" data-layer-id="land.line" data-reorder-id="land.line" data-reorder-scope="land">
-                  <button class="earthlab-row-swatch" id="landLineSwatch" type="button" aria-label="Set land outline colors"></button>
+                  <span class="earthlab-row-swatch" id="landLineSwatch" aria-hidden="true"></span>
                   <button class="earthlab-row-toggle" id="landLineToggle" type="button" role="checkbox" aria-checked="true">
                     Line
                   </button>
                   <span class="earthlab-row-slot" aria-hidden="true"></span>
                   <div class="earthlab-row-style" id="landLineStyle" hidden>
                     <div class="earthlab-style-control">
-                      <label class="earthlab-row-style-label" for="landLineColorPicker">Outline color</label>
-                      <input class="earthlab-color-picker" type="color" id="landLineColorPicker" value="#d9e4da" />
-                    </div>
-                    <div class="earthlab-style-control">
-                      <label class="earthlab-row-style-label" for="landLineOpacitySlider">Outline opacity</label>
-                      <input class="earthlab-range" type="range" id="landLineOpacitySlider" min="0" max="100" step="1" value="100" />
-                    </div>
-                    <div class="earthlab-style-control">
-                      <label class="earthlab-row-style-label" for="landLineWidthSlider">Outline width</label>
+                      <div class="earthlab-style-control-header">
+                        <label class="earthlab-row-style-label" for="landLineWidthSlider">Width</label>
+                        <div class="earthlab-row-style-value" id="landLineWidthValue"></div>
+                      </div>
                       <input class="earthlab-range" type="range" id="landLineWidthSlider" min="0" max="10" step="0.1" value="1" />
+                    </div>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <div class="earthlab-row-style-label">Color</div>
+                        <div class="earthlab-row-style-value" id="landLineColorValue"></div>
+                      </div>
+                      <div id="landLineColorControl"></div>
+                    </div>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <label class="earthlab-row-style-label" for="landLineOpacitySlider">Opacity</label>
+                        <div class="earthlab-row-style-value" id="landLineOpacityValue"></div>
+                      </div>
+                      <input class="earthlab-range" type="range" id="landLineOpacitySlider" min="0" max="100" step="1" value="100" />
                     </div>
                   </div>
                 </article>
               </div>
             </article>
             <article class="earthlab-row" data-row-id="graticules" data-reorder-id="graticules" data-reorder-scope="earth">
-              <button class="earthlab-row-swatch" id="graticulesSwatch" type="button" aria-label="Set graticules color"></button>
+              <span class="earthlab-row-swatch" id="graticulesSwatch" aria-hidden="true"></span>
               <button class="earthlab-row-toggle" id="graticulesToggle" type="button" role="checkbox" aria-checked="true">
                 Graticules
               </button>
               <span class="earthlab-row-slot" aria-hidden="true"></span>
               <div class="earthlab-row-style" id="graticulesStyle" hidden>
                 <div class="earthlab-style-control">
-                  <label class="earthlab-row-style-label" for="graticulesColorPicker">Graticules color</label>
-                  <input class="earthlab-color-picker" type="color" id="graticulesColorPicker" value="#8fa9bc" />
-                </div>
-                <div class="earthlab-style-control">
-                  <label class="earthlab-row-style-label" for="graticulesOpacitySlider">Graticules opacity</label>
-                  <input class="earthlab-range" type="range" id="graticulesOpacitySlider" min="0" max="100" step="1" value="100" />
-                </div>
-                <div class="earthlab-style-control">
-                  <label class="earthlab-row-style-label" for="graticulesWidthSlider">Graticules width</label>
+                  <div class="earthlab-style-control-header">
+                    <label class="earthlab-row-style-label" for="graticulesWidthSlider">Width</label>
+                    <div class="earthlab-row-style-value" id="graticulesWidthValue"></div>
+                  </div>
                   <input class="earthlab-range" type="range" id="graticulesWidthSlider" min="0" max="10" step="0.1" value="1" />
+                </div>
+                <div class="earthlab-style-control">
+                  <div class="earthlab-style-control-header">
+                    <div class="earthlab-row-style-label">Color</div>
+                    <div class="earthlab-row-style-value" id="graticulesColorValue"></div>
+                  </div>
+                  <div id="graticulesColorControl"></div>
+                </div>
+                <div class="earthlab-style-control">
+                  <div class="earthlab-style-control-header">
+                    <label class="earthlab-row-style-label" for="graticulesOpacitySlider">Opacity</label>
+                    <div class="earthlab-row-style-value" id="graticulesOpacityValue"></div>
+                  </div>
+                  <input class="earthlab-range" type="range" id="graticulesOpacitySlider" min="0" max="100" step="1" value="100" />
                 </div>
               </div>
             </article>
             <article class="earthlab-row" data-row-id="ocean" data-reorder-id="ocean" data-reorder-scope="earth">
-              <button class="earthlab-row-swatch" id="oceanSwatch" type="button" aria-label="Set ocean color"></button>
+              <span class="earthlab-row-swatch" id="oceanSwatch" aria-hidden="true"></span>
               <button class="earthlab-row-toggle" id="oceanToggle" type="button" role="checkbox" aria-checked="true">
                 Ocean
               </button>
               <span class="earthlab-row-slot" aria-hidden="true"></span>
               <div class="earthlab-row-style" id="oceanStyle" hidden>
                 <div class="earthlab-style-control">
-                  <label class="earthlab-row-style-label" for="oceanColorPicker">Ocean color</label>
-                  <input class="earthlab-color-picker" type="color" id="oceanColorPicker" value="#2c6f92" />
+                  <div class="earthlab-style-control-header">
+                    <div class="earthlab-row-style-label">Color</div>
+                    <div class="earthlab-row-style-value" id="oceanColorValue"></div>
+                  </div>
+                  <div id="oceanColorControl"></div>
                 </div>
                 <div class="earthlab-style-control">
-                  <label class="earthlab-row-style-label" for="oceanOpacitySlider">Ocean opacity</label>
+                  <div class="earthlab-style-control-header">
+                    <label class="earthlab-row-style-label" for="oceanOpacitySlider">Opacity</label>
+                    <div class="earthlab-row-style-value" id="oceanOpacityValue"></div>
+                  </div>
                   <input class="earthlab-range" type="range" id="oceanOpacitySlider" min="0" max="100" step="1" value="100" />
                 </div>
               </div>
@@ -184,7 +214,7 @@
           </div>
 
           <button class="earthlab-add-layer" id="addLayerBtn" type="button">
-            Add layer
+            + Add layer
           </button>
         </div>
 
