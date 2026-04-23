@@ -6,10 +6,12 @@ import {
   buildDefaultLayerState,
   getChannelTarget,
   getLayerVisibility,
+  normalizeDynamicLayers,
   normalizeLayerState,
   normalizeRenderOrder,
 } from "./core/layer-config.js";
 import { createPaletteStore, normalizeHexColor } from "./core/palette-store.js";
+import { getSupabaseCatalog, loadLayerFromSupabase } from "./sources/supabase/layer-loader.js";
 import { mountColorControl } from "./ui/color-control.js";
 import "./styles.css";
 
@@ -25,7 +27,14 @@ const OCEAN_RING = [[
 
 const STORAGE_KEY = "earthlab.earth.style.v1";
 const MAP_NAME_KEY = "earthlab.mapName.v1";
+const MAP_VIEW_KEY = "earthlab.mapView.v1";
 const HORIZON_CLIP_EPSILON = 0.002;
+const DEFAULT_MAP_VIEW = {
+  center: [0, 18],
+  zoom: 1.3,
+  bearing: 0,
+  pitch: 0,
+};
 const PALETTE_BINDINGS = [
   { controlId: "backgroundColorControl", appearanceKind: "screen" },
   { controlId: "settingsColorControl", appearanceKind: "settings" },
@@ -54,14 +63,29 @@ const state = {
   appearanceExpanded: false,
   appearanceGroupExpanded: false,
   activeAppearancePanels: { background: false, settings: false },
+  dynamicExpandedLayerIds: new Set(),
+  activeDynamicStylePanels: new Map(),
   drag: null,
   panelCollapsed: true,
-  earthLayersExpanded: true,
-  earthExpanded: true,
+  earthLayersExpanded: false,
+  earthExpanded: false,
+  addLayerPanelOpen: false,
+  addLayerSearch: "",
+  existingLayers: [],
+  existingLayersLoaded: false,
+  existingLayersLoading: false,
+  existingLayersError: "",
+  loadingExistingLayerId: "",
+  addLayerActionError: "",
+  dynamicLayerData: new Map(),
+  dynamicDeckLayerCache: new Map(),
+  dynamicLayerErrors: new Map(),
+  loadingDynamicLayerIds: new Set(),
 };
 
 const paletteStore = createPaletteStore();
 const paletteControls = new Map();
+const dynamicPaletteControls = new Map();
 
 function setBootStage(stage) {
   document.body.dataset.earthlabStage = stage;
@@ -167,6 +191,7 @@ const controls = {
   earthSwatch: document.getElementById("earthSwatch"),
   earthToggle: document.getElementById("earthToggle"),
   earthChildren: document.getElementById("earthChildren"),
+  dynamicRows: document.getElementById("dynamicRows"),
   rows: document.getElementById("earthRows"),
   oceanSwatch: document.getElementById("oceanSwatch"),
   graticulesSwatch: document.getElementById("graticulesSwatch"),
@@ -199,6 +224,11 @@ const controls = {
   landLineOpacityValue: document.getElementById("landLineOpacityValue"),
   landLineWidthSlider: document.getElementById("landLineWidthSlider"),
   landLineWidthValue: document.getElementById("landLineWidthValue"),
+  addLayerBtn: document.getElementById("addLayerBtn"),
+  addLayerPanel: document.getElementById("addLayerPanel"),
+  addLayerExistingList: document.getElementById("addLayerExistingList"),
+  addLayerSearchInput: document.getElementById("addLayerSearchInput"),
+  addNewLayerBtn: document.getElementById("addNewLayerBtn"),
 };
 
 function readLayerState() {
@@ -215,6 +245,51 @@ function persistLayerState() {
     window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(state.layerState));
   } catch {
     // Ignore storage failures to keep the runtime usable.
+  }
+}
+
+function readMapView() {
+  try {
+    const raw = window.localStorage?.getItem(MAP_VIEW_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const [lng, lat] = Array.isArray(parsed?.center) ? parsed.center.map(Number) : [];
+    const zoom = Number(parsed?.zoom);
+    const bearing = Number(parsed?.bearing);
+    const pitch = Number(parsed?.pitch);
+    if (
+      !Number.isFinite(lng) ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(zoom) ||
+      !Number.isFinite(bearing) ||
+      !Number.isFinite(pitch)
+    ) {
+      return DEFAULT_MAP_VIEW;
+    }
+    return {
+      center: [Math.max(-180, Math.min(180, lng)), Math.max(-85, Math.min(85, lat))],
+      zoom: Math.max(0, Math.min(24, zoom)),
+      bearing,
+      pitch: Math.max(0, Math.min(85, pitch)),
+    };
+  } catch {
+    return DEFAULT_MAP_VIEW;
+  }
+}
+
+function persistMapView() {
+  if (!state.map) {
+    return;
+  }
+  try {
+    const center = state.map.getCenter();
+    window.localStorage?.setItem(MAP_VIEW_KEY, JSON.stringify({
+      center: [center.lng, center.lat],
+      zoom: state.map.getZoom(),
+      bearing: state.map.getBearing(),
+      pitch: state.map.getPitch(),
+    }));
+  } catch {
+    // Ignore storage failures; camera persistence is non-critical.
   }
 }
 
@@ -264,6 +339,16 @@ function defer(task) {
 
 function getElementTarget(event) {
   return event.target instanceof Element ? event.target : null;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[char]);
 }
 
 function getLayer(layerId) {
@@ -319,6 +404,13 @@ function syncRowOrderFromState() {
       controls.landChildren.append(rowElement);
     }
   });
+
+  getDynamicLayers().forEach((layer) => {
+    const rowElement = controls.dynamicRows.querySelector(`:scope > [data-reorder-id="${layer.id}"]`);
+    if (rowElement) {
+      controls.dynamicRows.append(rowElement);
+    }
+  });
 }
 
 function applyRowDepthParity(root = controls.layerStack) {
@@ -370,6 +462,21 @@ function rebuildRenderOrderFromDom() {
   });
 
   state.layerState.order = normalizeRenderOrder(nextOrder);
+}
+
+function rebuildDynamicLayerOrderFromDom() {
+  const byId = new Map(getDynamicLayers().map((layer) => [layer.id, layer]));
+  const nextLayers = [];
+
+  controls.dynamicRows.querySelectorAll(':scope > [data-reorder-scope="dynamic"]').forEach((rowElement) => {
+    const layer = byId.get(rowElement.dataset.reorderId);
+    if (layer) {
+      nextLayers.push(layer);
+      byId.delete(layer.id);
+    }
+  });
+
+  state.layerState.dynamicLayers = normalizeDynamicLayers([...nextLayers, ...byId.values()]);
 }
 
 function svgEl(name) {
@@ -473,11 +580,161 @@ function getLegendSpec(rowId) {
   return null;
 }
 
+function getDynamicLayerLegendSpec(layer) {
+  const geometryTypes = Array.isArray(layer?.geometryTypes) && layer.geometryTypes.length
+    ? layer.geometryTypes
+    : [layer?.geometryType].filter(Boolean);
+  const uniqueTypes = [...new Set(geometryTypes.map((value) => (value === "area" ? "polygon" : value)))];
+  if (uniqueTypes.length !== 1) {
+    return null;
+  }
+
+  const style = getDefaultDynamicLayerStyle(layer?.style);
+
+  if (uniqueTypes[0] === "point") {
+    const point = getDynamicChannel(layer, "point") ?? style;
+    const line = getDynamicChannel(layer, "pointLine") ?? {};
+    const opacity = layer?.visible === false || point.visible === false ? 0 : point.opacity;
+    const lineOpacity = layer?.visible === false || line.visible === false ? 0 : line.opacity ?? 100;
+    return {
+      kind: "point",
+      fillColor: point.color ?? style.color,
+      fillOpacity: opacity,
+      lineColor: line.color ?? "#000000",
+      lineOpacity,
+      lineWidth: line.width ?? 1,
+      radius: point.radius ?? style.pointRadius,
+    };
+  }
+
+  if (uniqueTypes[0] === "line") {
+    const line = getDynamicChannel(layer, "line") ?? style;
+    const opacity = layer?.visible === false || line.visible === false ? 0 : line.opacity;
+    return {
+      kind: "line",
+      color: line.color ?? style.color,
+      opacity,
+      width: line.width ?? style.lineWidth,
+    };
+  }
+
+  if (uniqueTypes[0] === "polygon") {
+    const fill = getDynamicChannel(layer, "fill") ?? style;
+    const line = getDynamicChannel(layer, "line") ?? style;
+    const fillOpacity = layer?.visible === false || fill.visible === false ? 0 : fill.opacity;
+    const lineOpacity = layer?.visible === false || line.visible === false ? 0 : line.opacity;
+    return {
+      kind: "polygon",
+      fillColor: fill.color ?? style.color,
+      fillOpacity,
+      lineColor: line.color ?? style.color,
+      lineOpacity,
+      lineWidth: line.width ?? style.lineWidth,
+    };
+  }
+
+  return null;
+}
+
+function getDynamicChannelLegendSpec(layer, channelId) {
+  const style = getDefaultDynamicLayerStyle(layer?.style);
+  const channel = getDynamicChannel(layer, channelId) ?? {};
+  const visible = layer?.visible !== false && channel.visible !== false;
+  const opacity = visible ? channel.opacity ?? style.opacity : 0;
+  const color = channel.color ?? style.color;
+
+  if (channelId === "point") {
+    return {
+      kind: "point",
+      fillColor: color,
+      fillOpacity: opacity,
+      lineColor: "#000000",
+      lineOpacity: opacity,
+      lineWidth: 1,
+      radius: channel.radius ?? style.pointRadius,
+    };
+  }
+
+  if (channelId === "line" || channelId === "pointLine") {
+    return {
+      kind: "line",
+      color,
+      opacity,
+      width: channel.width ?? style.lineWidth,
+    };
+  }
+
+  return {
+    kind: "polygon",
+    fillColor: color,
+    fillOpacity: opacity,
+    lineColor: "#ffffff",
+    lineOpacity: 0,
+    lineWidth: 0,
+  };
+}
+
+function getDynamicLayers() {
+  return state.layerState.dynamicLayers ?? [];
+}
+
+function getDynamicLayerData(layerId) {
+  return state.dynamicLayerData.get(layerId) ?? null;
+}
+
+function setDynamicLayerData(layerId, geojson) {
+  state.dynamicLayerData.set(layerId, {
+    geojson,
+    loadedAt: Date.now(),
+    geometry: {
+      polygon: filterGeojsonByGeometryFamily(geojson, "polygon"),
+      line: filterGeojsonByGeometryFamily(geojson, "line"),
+      point: filterGeojsonByGeometryFamily(geojson, "point"),
+    },
+  });
+  invalidateDynamicDeckLayerCache(layerId);
+}
+
+function getDynamicChannel(layer, channelId) {
+  return layer?.channels?.[channelId] ?? null;
+}
+
+function invalidateDynamicDeckLayerCache(layerId = null) {
+  if (layerId) {
+    state.dynamicDeckLayerCache.delete(layerId);
+    return;
+  }
+  state.dynamicDeckLayerCache.clear();
+}
+
+function persistDynamicLayers() {
+  state.layerState.dynamicLayers = normalizeDynamicLayers(state.layerState.dynamicLayers);
+  invalidateDynamicDeckLayerCache();
+  persistLayerState();
+}
+
+function getDynamicGeometryChannels(layer) {
+  const geometryTypes = Array.isArray(layer?.geometryTypes) ? layer.geometryTypes : [];
+  const channels = [];
+  if (geometryTypes.includes("polygon")) {
+    channels.push({ id: "fill", label: "Fill", sample: "polygon" });
+    channels.push({ id: "line", label: "Line", sample: "line" });
+  } else if (geometryTypes.includes("line")) {
+    channels.push({ id: "line", label: "Line", sample: "line" });
+  }
+  if (geometryTypes.includes("point")) {
+    channels.push({ id: "point", label: "Point", sample: "point" });
+    channels.push({ id: "pointLine", label: "Line", sample: "line" });
+  }
+  return channels;
+}
+
 function createLegendSvg(spec) {
   const svg = svgEl("svg");
-  svg.setAttribute("viewBox", "0 0 42 18");
+  const isPoint = spec?.kind === "point";
+  svg.setAttribute("viewBox", isPoint ? "0 0 42 42" : "0 0 42 18");
   svg.setAttribute("width", "42");
-  svg.setAttribute("height", "18");
+  svg.setAttribute("height", isPoint ? "42" : "18");
   svg.classList.add("earthlab-row-swatch-svg");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
@@ -488,8 +745,8 @@ function createLegendSvg(spec) {
 
   if (spec.kind === "line") {
     const line = svgEl("line");
-    line.setAttribute("x1", "3");
-    line.setAttribute("x2", "39");
+    line.setAttribute("x1", "8");
+    line.setAttribute("x2", "34");
     line.setAttribute("y1", "9");
     line.setAttribute("y2", "9");
     line.setAttribute("stroke", normalizeHexColor(spec.color) ?? "#ffffff");
@@ -501,10 +758,11 @@ function createLegendSvg(spec) {
   }
 
   if (spec.kind === "point") {
+    const radius = Math.max(0, Number(spec.radius) || 0);
     const circle = svgEl("circle");
     circle.setAttribute("cx", "21");
-    circle.setAttribute("cy", "9");
-    circle.setAttribute("r", String(Math.max(3, Math.min(6, Number(spec.radius) || 4))));
+    circle.setAttribute("cy", "21");
+    circle.setAttribute("r", String(radius));
     circle.setAttribute("fill", normalizeHexColor(spec.fillColor) ?? "#ffffff");
     circle.setAttribute("fill-opacity", String(clampOpacity(spec.fillOpacity) / 100));
     circle.setAttribute("stroke", normalizeHexColor(spec.lineColor) ?? "#ffffff");
@@ -702,6 +960,190 @@ function renderPaletteControls() {
   paletteControls.forEach((control) => control.render());
 }
 
+function renderDynamicLayerRows() {
+  if (!controls.dynamicRows) {
+    return;
+  }
+
+  const dynamicLayers = getDynamicLayers();
+  controls.dynamicRows.hidden = dynamicLayers.length === 0;
+  controls.dynamicRows.innerHTML = dynamicLayers.map((layer) => {
+    const expanded = state.dynamicExpandedLayerIds.has(layer.id);
+    const channels = getDynamicGeometryChannels(layer);
+    return `
+    <article class="earthlab-row earthlab-row-parent" data-row-id="dynamic:${escapeHtml(layer.id)}" data-reorder-scope="dynamic" data-reorder-id="${escapeHtml(layer.id)}" data-dynamic-layer-id="${escapeHtml(layer.id)}">
+      <span class="earthlab-row-swatch" data-dynamic-layer-swatch="${escapeHtml(layer.id)}" aria-hidden="true"></span>
+      <button class="earthlab-row-toggle" type="button" role="checkbox" aria-checked="${layer.visible !== false}" data-dynamic-layer-toggle="${escapeHtml(layer.id)}">
+        ${escapeHtml(layer.label ?? "Untitled layer")}
+      </button>
+      <span class="earthlab-row-slot" aria-hidden="true"></span>
+      <div class="earthlab-row-children" data-dynamic-layer-children="${escapeHtml(layer.id)}" ${expanded ? "" : "hidden"}>
+        ${channels.map((channel) => renderDynamicChannelRow(layer, channel)).join("")}
+      </div>
+    </article>
+    `;
+  }).join("");
+
+  dynamicLayers.forEach((layer) => {
+    const swatch = Array.from(controls.dynamicRows.querySelectorAll("[data-dynamic-layer-swatch]"))
+      .find((element) => element.dataset.dynamicLayerSwatch === layer.id);
+    renderLegendButton(swatch, getDynamicLayerLegendSpec(layer));
+
+    getDynamicGeometryChannels(layer).forEach((channel) => {
+      const channelSwatch = Array.from(controls.dynamicRows.querySelectorAll("[data-dynamic-channel-swatch]"))
+        .find((element) => element.dataset.dynamicLayerId === layer.id && element.dataset.dynamicChannelSwatch === channel.id);
+      renderLegendButton(channelSwatch, getDynamicChannelLegendSpec(layer, channel.id));
+    });
+  });
+
+  mountDynamicColorControls();
+}
+
+function renderDynamicChannelRow(layer, channelDef) {
+  const activePanel = state.activeDynamicStylePanels.get(layer.id);
+  const channel = getDynamicChannel(layer, channelDef.id) ?? {};
+  return `
+    <article class="earthlab-row earthlab-row-child" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-row="${escapeHtml(channelDef.id)}">
+      <span class="earthlab-row-swatch" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-swatch="${escapeHtml(channelDef.id)}" aria-hidden="true"></span>
+      <button class="earthlab-row-toggle" type="button" role="checkbox" aria-checked="${channel.visible !== false}" data-dynamic-channel-toggle="${escapeHtml(channelDef.id)}">
+        ${escapeHtml(channelDef.label)}
+      </button>
+      <span class="earthlab-row-slot" aria-hidden="true"></span>
+      <div class="earthlab-row-style" data-dynamic-style-panel="${escapeHtml(channelDef.id)}" ${activePanel === channelDef.id ? "" : "hidden"}>
+        ${renderDynamicChannelControls(layer, channelDef.id)}
+      </div>
+    </article>
+  `;
+}
+
+function renderDynamicChannelControls(layer, channelId) {
+  const channel = getDynamicChannel(layer, channelId) ?? {};
+  const color = channel.color ?? getDefaultDynamicLayerStyle(layer.style).color;
+  const opacity = Math.round(Number(channel.opacity ?? 80));
+  const width = Number(channel.width ?? 2).toFixed(1);
+  const radius = Number(channel.radius ?? 6).toFixed(1);
+  const colorControl = `
+    <div class="earthlab-style-control">
+      <div class="earthlab-style-control-header">
+        <div class="earthlab-row-style-label">Color</div>
+        <div class="earthlab-row-style-value" data-dynamic-value="${escapeHtml(channelId)}:color" data-dynamic-layer-id="${escapeHtml(layer.id)}">${escapeHtml(color)}</div>
+      </div>
+      <div data-dynamic-color-control="${escapeHtml(channelId)}" data-dynamic-layer-id="${escapeHtml(layer.id)}"></div>
+    </div>
+  `;
+  const opacityControl = `
+    <div class="earthlab-style-control">
+      <div class="earthlab-style-control-header">
+        <div class="earthlab-row-style-label">Opacity</div>
+        <div class="earthlab-row-style-value" data-dynamic-value="${escapeHtml(channelId)}:opacity" data-dynamic-layer-id="${escapeHtml(layer.id)}">${opacity}%</div>
+      </div>
+      <input class="earthlab-range" type="range" min="0" max="100" step="1" value="${opacity}" data-dynamic-slider="opacity" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-id="${escapeHtml(channelId)}" />
+    </div>
+  `;
+
+  if (channelId === "line" || channelId === "pointLine") {
+    return `
+      <div class="earthlab-style-control">
+        <div class="earthlab-style-control-header">
+          <div class="earthlab-row-style-label">Width</div>
+          <div class="earthlab-row-style-value" data-dynamic-value="${escapeHtml(channelId)}:width" data-dynamic-layer-id="${escapeHtml(layer.id)}">${width} px</div>
+        </div>
+        <input class="earthlab-range" type="range" min="0" max="10" step="0.1" value="${width}" data-dynamic-slider="width" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-id="${escapeHtml(channelId)}" />
+      </div>
+      ${colorControl}
+      ${opacityControl}
+    `;
+  }
+
+  if (channelId === "point") {
+    return `
+      <div class="earthlab-style-control">
+        <div class="earthlab-style-control-header">
+          <div class="earthlab-row-style-label">Radius</div>
+          <div class="earthlab-row-style-value" data-dynamic-value="${escapeHtml(channelId)}:radius" data-dynamic-layer-id="${escapeHtml(layer.id)}">${radius} px</div>
+        </div>
+        <input class="earthlab-range" type="range" min="1" max="20" step="0.5" value="${radius}" data-dynamic-slider="radius" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-id="${escapeHtml(channelId)}" />
+      </div>
+      ${colorControl}
+      ${opacityControl}
+    `;
+  }
+
+  return `${colorControl}${opacityControl}`;
+}
+
+function mountDynamicColorControls() {
+  dynamicPaletteControls.clear();
+  controls.dynamicRows.querySelectorAll("[data-dynamic-color-control]").forEach((mount) => {
+    const layerId = mount.dataset.dynamicLayerId;
+    const channelId = mount.dataset.dynamicColorControl;
+    const layer = getDynamicLayers().find((entry) => entry.id === layerId);
+    const channel = getDynamicChannel(layer, channelId);
+    if (!layer || !channel) {
+      return;
+    }
+
+    const key = `${layerId}:${channelId}`;
+    const control = mountColorControl({
+      mount,
+      initialValue: channel.color,
+      paletteStore,
+      onChange(nextColor) {
+        const currentLayer = getDynamicLayers().find((entry) => entry.id === layerId);
+        const currentChannel = getDynamicChannel(currentLayer, channelId);
+        if (!currentChannel) {
+          return;
+        }
+        currentChannel.color = nextColor;
+        persistDynamicLayers();
+        updateDynamicLayerPresentation(layerId, channelId);
+        updateOverlayLayersOnly();
+      },
+    });
+    dynamicPaletteControls.set(key, control);
+  });
+}
+
+function updateDynamicLayerPresentation(layerId, channelId) {
+  const layer = getDynamicLayers().find((entry) => entry.id === layerId);
+  if (!layer || !controls.dynamicRows) {
+    return;
+  }
+
+  const parentSwatch = Array.from(controls.dynamicRows.querySelectorAll("[data-dynamic-layer-swatch]"))
+    .find((element) => element.dataset.dynamicLayerSwatch === layerId);
+  renderLegendButton(parentSwatch, getDynamicLayerLegendSpec(layer));
+
+  if (channelId) {
+    const channelSwatch = Array.from(controls.dynamicRows.querySelectorAll("[data-dynamic-channel-swatch]"))
+      .find((element) => element.dataset.dynamicLayerId === layerId && element.dataset.dynamicChannelSwatch === channelId);
+    renderLegendButton(channelSwatch, getDynamicChannelLegendSpec(layer, channelId));
+  }
+
+  const channel = getDynamicChannel(layer, channelId);
+  if (!channel) {
+    return;
+  }
+
+  const valueLabels = Array.from(controls.dynamicRows.querySelectorAll("[data-dynamic-value]"))
+    .filter((label) => (
+      label.dataset.dynamicLayerId === layerId &&
+      label.dataset.dynamicValue.startsWith(`${channelId}:`)
+    ));
+  valueLabels.forEach((label) => {
+    const [, key] = label.dataset.dynamicValue.split(":");
+    if (key === "color") {
+      label.textContent = channel.color ?? "";
+    } else if (key === "opacity") {
+      label.textContent = `${Math.round(Number(channel.opacity ?? 0))}%`;
+    } else if (key === "width") {
+      label.textContent = `${Number(channel.width ?? 0).toFixed(1)} px`;
+    } else if (key === "radius") {
+      label.textContent = `${Number(channel.radius ?? 0).toFixed(1)} px`;
+    }
+  });
+}
+
 function getToolbarAustraliaPaths() {
   const fallbackPaths = [
     "M4.2 13.1C4.7 11.2 6.4 9.9 8.4 9.3C9.8 8.9 11 9.5 12.1 9.1C13.1 8.7 13.3 7.5 14 7.5C14.8 8.2 14.5 9.4 15.1 9.9C16.2 9.4 17.4 8.4 19.1 8.8C20.8 9.2 22 10.8 21.9 12.7C21.8 14.6 20.4 16.2 18.7 17.1C17.6 17.7 16.5 17.5 15.5 18.1C14.4 18.7 13.8 19.7 12.4 19.8C11.1 19.8 10.6 18.6 9.3 18.3C8.1 18.1 6.6 18.5 5.6 17.4C4.5 16.3 3.8 14.6 4.2 13.1Z",
@@ -762,10 +1204,6 @@ function applyAppearanceStyles() {
   const screenFill = `rgb(${screenComposited.r}, ${screenComposited.g}, ${screenComposited.b})`;
   const settingsFill = `rgba(${settingsRgb.r}, ${settingsRgb.g}, ${settingsRgb.b}, ${(Number(settings?.opacity) || 0) / 100})`;
   const settingsLineFill = `rgba(${settingsLineRgb.r}, ${settingsLineRgb.g}, ${settingsLineRgb.b}, ${(Number(settings?.lineOpacity) || 0) / 100})`;
-  const settingsOpacity = (Number(settings?.opacity) || 0) / 100;
-  const oddOpacity = Math.min(1, settingsOpacity * 1.6);
-  const rowBgOdd = `rgba(${settingsRgb.r}, ${settingsRgb.g}, ${settingsRgb.b}, ${oddOpacity})`;
-
   document.body.style.backgroundColor = screenFill;
   controls.app.style.backgroundColor = screenFill;
   if (state.map?.getLayer("background")) {
@@ -775,7 +1213,7 @@ function applyAppearanceStyles() {
   document.documentElement.style.setProperty("--settings-surface-fill", settingsFill);
   document.documentElement.style.setProperty("--settings-border-fill", settingsLineFill);
   document.documentElement.style.setProperty("--row-bg-even", settingsFill);
-  document.documentElement.style.setProperty("--row-bg-odd", rowBgOdd);
+  document.documentElement.style.setProperty("--row-bg-odd", settingsFill);
 }
 
 function getScreenBackgroundFill() {
@@ -837,6 +1275,7 @@ function syncControlsFromState() {
   renderLegendButton(controls.landSwatch, getLegendSpec("land"));
   renderLegendButton(controls.landFillSwatch, getLegendSpec("landFill"));
   renderLegendButton(controls.landLineSwatch, getLegendSpec("landLine"));
+  renderDynamicLayerRows();
 
   controls.earthToggle.setAttribute("aria-checked", String(getLayer("earth")?.visible !== false));
   controls.oceanToggle.setAttribute("aria-checked", String(getLayer("ocean")?.visible !== false));
@@ -976,7 +1415,121 @@ function buildLayers() {
   return [...normalizeRenderOrder(state.layerState.order)]
     .reverse()
     .map((layerId) => layerBuilders[layerId]?.())
-    .filter(Boolean);
+    .filter(Boolean)
+    .concat(buildDynamicDeckLayers(clippedLayerProps));
+}
+
+function buildDynamicDeckLayers(clippedLayerProps) {
+  return [...getDynamicLayers()].reverse()
+    .flatMap((entry) => getCachedDynamicDeckLayers(entry, clippedLayerProps));
+}
+
+function getDynamicDeckLayerSignature(entry, dataRecord) {
+  return JSON.stringify({
+    loadedAt: dataRecord?.loadedAt ?? 0,
+    visible: entry?.visible !== false,
+    channels: entry?.channels ?? {},
+  });
+}
+
+function getCachedDynamicDeckLayers(entry, clippedLayerProps) {
+  const dataRecord = getDynamicLayerData(entry.id);
+  if (entry?.visible === false || !dataRecord?.geojson) {
+    return [];
+  }
+
+  const signature = getDynamicDeckLayerSignature(entry, dataRecord);
+  const cached = state.dynamicDeckLayerCache.get(entry.id);
+  if (cached?.signature === signature) {
+    return cached.layers;
+  }
+
+  const layers = createDynamicDeckLayers(entry, dataRecord, clippedLayerProps);
+  state.dynamicDeckLayerCache.set(entry.id, { signature, layers });
+  return layers;
+}
+
+function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
+  const layers = [];
+  const polygonData = dataRecord.geometry?.polygon ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "polygon");
+  const lineData = dataRecord.geometry?.line ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "line");
+  const pointData = dataRecord.geometry?.point ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "point");
+  const fill = getDynamicChannel(entry, "fill");
+  const line = getDynamicChannel(entry, "line");
+  const point = getDynamicChannel(entry, "point");
+  const pointLine = getDynamicChannel(entry, "pointLine");
+
+  if (polygonData.features.length && fill?.visible !== false) {
+    layers.push(new GeoJsonLayer({
+      id: `earthlab-dynamic-${entry.id}-fill`,
+      ...clippedLayerProps,
+      data: polygonData,
+      filled: true,
+      stroked: false,
+      getFillColor: toDeckColor(fill.color, percentToAlpha(fill.opacity)),
+      pickable: true,
+      parameters: { depthTest: false },
+    }));
+  }
+
+  if ((polygonData.features.length || lineData.features.length) && line?.visible !== false) {
+    layers.push(new GeoJsonLayer({
+      id: `earthlab-dynamic-${entry.id}-line`,
+      ...clippedLayerProps,
+      data: {
+        type: "FeatureCollection",
+        features: [...polygonData.features, ...lineData.features],
+      },
+      filled: false,
+      stroked: true,
+      getLineColor: toDeckColor(line.color, percentToAlpha(line.opacity)),
+      getLineWidth: Number(line.width) || 0,
+      lineWidthUnits: "pixels",
+      lineWidthMinPixels: Number(line.width) || 0,
+      jointRounded: true,
+      capRounded: true,
+      pickable: true,
+      parameters: { depthTest: false },
+    }));
+  }
+
+  if (pointData.features.length && point?.visible !== false) {
+    layers.push(new GeoJsonLayer({
+      id: `earthlab-dynamic-${entry.id}-point`,
+      ...clippedLayerProps,
+      data: pointData,
+      filled: true,
+      stroked: true,
+      pointType: "circle",
+      getFillColor: toDeckColor(point.color, percentToAlpha(point.opacity)),
+      getLineColor: toDeckColor(pointLine?.color ?? "#000000", percentToAlpha(pointLine?.visible === false ? 0 : pointLine?.opacity ?? 100)),
+      getLineWidth: pointLine?.visible === false ? 0 : Number(pointLine?.width ?? 1) || 0,
+      lineWidthUnits: "pixels",
+      lineWidthMinPixels: pointLine?.visible === false ? 0 : Number(pointLine?.width ?? 1) || 0,
+      getPointRadius: Number(point.radius) || 1,
+      pointRadiusUnits: "pixels",
+      pointRadiusMinPixels: Number(point.radius) || 1,
+      pickable: true,
+      parameters: { depthTest: false },
+    }));
+  }
+
+  return layers;
+}
+
+function getFeatureGeometryFamily(feature) {
+  const type = feature?.geometry?.type;
+  if (type === "Point" || type === "MultiPoint") return "point";
+  if (type === "LineString" || type === "MultiLineString") return "line";
+  if (type === "Polygon" || type === "MultiPolygon") return "polygon";
+  return null;
+}
+
+function filterGeojsonByGeometryFamily(geojson, family) {
+  return {
+    type: "FeatureCollection",
+    features: (geojson?.features ?? []).filter((feature) => getFeatureGeometryFamily(feature) === family),
+  };
 }
 
 function updateOverlay() {
@@ -984,6 +1537,14 @@ function updateOverlay() {
     return;
   }
   syncControlsFromState();
+  state.overlay.setProps({ layers: buildLayers() });
+  updateStatus();
+}
+
+function updateOverlayLayersOnly() {
+  if (!state.overlay) {
+    return;
+  }
   state.overlay.setProps({ layers: buildLayers() });
   updateStatus();
 }
@@ -1000,6 +1561,227 @@ function syncEarthLayers() {
   controls.earthLayersBtn.dataset.active = String(state.earthLayersExpanded);
   controls.earthChildren.hidden = !state.earthExpanded;
   controls.earthToggle.setAttribute("aria-checked", String(getLayer("earth")?.visible !== false));
+}
+
+function syncAddLayerPanel() {
+  controls.addLayerPanel.hidden = !state.addLayerPanelOpen;
+  controls.addLayerBtn.setAttribute("aria-expanded", String(state.addLayerPanelOpen));
+  controls.addLayerSearchInput.value = state.addLayerSearch;
+  renderExistingLayerList();
+}
+
+function collapseMenuSections() {
+  state.earthLayersExpanded = false;
+  state.earthExpanded = false;
+  state.expandedRows.ocean = false;
+  state.expandedRows.graticules = false;
+  state.expandedRows.land = false;
+  state.activeChildPanelByRow.land = null;
+  state.appearanceExpanded = false;
+  state.appearanceGroupExpanded = false;
+  state.activeAppearancePanels.background = false;
+  state.activeAppearancePanels.settings = false;
+  state.dynamicExpandedLayerIds.clear();
+  state.activeDynamicStylePanels.clear();
+  state.addLayerPanelOpen = false;
+}
+
+function formatGeometryTypes(geometryTypes = [], geometryType = "mixed") {
+  const types = Array.isArray(geometryTypes) && geometryTypes.length ? geometryTypes : [geometryType];
+  return types.filter(Boolean).join(", ") || "mixed";
+}
+
+function getDefaultDynamicLayerStyle(style = {}) {
+  return {
+    color: normalizeHexColor(style?.color ?? "#e74c3c") ?? "#e74c3c",
+    opacity: clampOpacity(style?.opacity ?? 80),
+    lineWidth: Math.max(0, Number(style?.weight ?? style?.lineWidth ?? 2) || 0),
+    pointRadius: Math.max(1, Number(style?.radius ?? style?.pointRadius ?? 6) || 6),
+  };
+}
+
+function renderExistingLayerList() {
+  const list = controls.addLayerExistingList;
+  if (!list) {
+    return;
+  }
+
+  const search = state.addLayerSearch.trim().toLowerCase();
+  const layers = search
+    ? state.existingLayers.filter((layer) => {
+      const layerName = String(layer.label ?? layer.name ?? "").toLowerCase();
+      return layerName.includes(search);
+    })
+    : state.existingLayers;
+
+  if (state.existingLayersLoading) {
+    list.className = "earthlab-existing-placeholder";
+    list.innerHTML = `
+      <span class="earthlab-existing-placeholder-title">Loading layers</span>
+      <span class="earthlab-existing-placeholder-copy">Fetching Supabase catalog...</span>
+    `;
+    return;
+  }
+
+  if (state.existingLayersError) {
+    list.className = "earthlab-existing-placeholder";
+    list.innerHTML = `
+      <span class="earthlab-existing-placeholder-title">Could not load layers</span>
+      <span class="earthlab-existing-placeholder-copy">${escapeHtml(state.existingLayersError)}</span>
+    `;
+    return;
+  }
+
+  if (state.addLayerActionError) {
+    list.className = "earthlab-existing-placeholder";
+    list.innerHTML = `
+      <span class="earthlab-existing-placeholder-title">Could not add layer</span>
+      <span class="earthlab-existing-placeholder-copy">${escapeHtml(state.addLayerActionError)}</span>
+    `;
+    return;
+  }
+
+  if (!state.existingLayers.length) {
+    list.className = "earthlab-existing-placeholder";
+    list.innerHTML = `
+      <span class="earthlab-existing-placeholder-title">No layers found</span>
+      <span class="earthlab-existing-placeholder-copy">Public and unlisted Supabase layers will appear here.</span>
+    `;
+    return;
+  }
+
+  if (!layers.length) {
+    list.className = "earthlab-existing-placeholder";
+    list.innerHTML = `
+      <span class="earthlab-existing-placeholder-title">No matches</span>
+      <span class="earthlab-existing-placeholder-copy">No existing layers match "${escapeHtml(state.addLayerSearch)}".</span>
+    `;
+    return;
+  }
+
+  list.className = "earthlab-existing-list";
+  list.innerHTML = layers.map((layer) => `
+    <button class="earthlab-existing-item" type="button" data-layer-id="${escapeHtml(layer.id)}" ${state.loadingExistingLayerId ? "disabled" : ""}>
+      <span class="earthlab-existing-item-name">${escapeHtml(layer.label ?? "Untitled layer")}</span>
+      <span class="earthlab-existing-item-meta">${
+        state.loadingExistingLayerId === layer.id
+          ? "Loading..."
+          : getDynamicLayers().some((entry) => entry.id === layer.id)
+            ? "Added"
+            : escapeHtml(formatGeometryTypes(layer.geometryTypes, layer.geometryType))
+      }</span>
+    </button>
+  `).join("");
+}
+
+async function addExistingLayerToMap(layerId) {
+  if (!layerId || state.loadingExistingLayerId) {
+    return;
+  }
+
+  const existing = getDynamicLayers().find((entry) => entry.id === layerId);
+  if (existing) {
+    existing.visible = true;
+    persistDynamicLayers();
+    state.addLayerPanelOpen = false;
+    syncAddLayerPanel();
+    await ensureDynamicLayerLoaded(existing.id);
+    updateOverlay();
+    return;
+  }
+
+  state.loadingExistingLayerId = layerId;
+  state.addLayerActionError = "";
+  state.loadingDynamicLayerIds.add(layerId);
+  renderExistingLayerList();
+
+  try {
+    const loaded = await loadLayerFromSupabase(layerId);
+    if (!loaded.geojson) {
+      throw new Error("This layer is not available as GeoJSON yet.");
+    }
+
+    const nextLayer = {
+      id: loaded.layer.id,
+      label: loaded.layer.name ?? "Untitled layer",
+      source: "supabase",
+      geometryTypes: loaded.layer.geometryTypes,
+      geometryType: loaded.layer.geometry_type ?? "mixed",
+      style: getDefaultDynamicLayerStyle(loaded.layer.default_style),
+      visible: true,
+    };
+    setDynamicLayerData(layerId, loaded.geojson);
+    state.dynamicLayerErrors.delete(layerId);
+    state.layerState.dynamicLayers = normalizeDynamicLayers([...getDynamicLayers(), nextLayer]);
+    state.addLayerPanelOpen = false;
+    persistLayerState();
+    updateOverlay();
+  } catch (error) {
+    state.addLayerActionError = error?.message ?? "Failed to add layer.";
+    state.dynamicLayerErrors.set(layerId, state.addLayerActionError);
+    syncControlsFromState();
+  } finally {
+    state.loadingExistingLayerId = "";
+    state.loadingDynamicLayerIds.delete(layerId);
+    syncControlsFromState();
+    syncAddLayerPanel();
+  }
+}
+
+async function ensureDynamicLayerLoaded(layerId) {
+  const layer = getDynamicLayers().find((entry) => entry.id === layerId);
+  if (!layer || getDynamicLayerData(layerId) || state.loadingDynamicLayerIds.has(layerId)) {
+    return;
+  }
+
+  state.loadingDynamicLayerIds.add(layerId);
+  state.dynamicLayerErrors.delete(layerId);
+  syncControlsFromState();
+
+  try {
+    const loaded = await loadLayerFromSupabase(layerId);
+    if (!loaded.geojson) {
+      throw new Error("This layer is not available as GeoJSON yet.");
+    }
+
+    setDynamicLayerData(layerId, loaded.geojson);
+    state.dynamicLayerErrors.delete(layerId);
+    updateOverlay();
+  } catch (error) {
+    state.dynamicLayerErrors.set(layerId, error?.message ?? "Failed to load layer.");
+    syncControlsFromState();
+  } finally {
+    state.loadingDynamicLayerIds.delete(layerId);
+    syncControlsFromState();
+    syncAddLayerPanel();
+  }
+}
+
+function hydratePersistedDynamicLayers() {
+  getDynamicLayers().forEach((layer) => {
+    void ensureDynamicLayerLoaded(layer.id);
+  });
+}
+
+async function ensureExistingLayersLoaded() {
+  if (state.existingLayersLoaded || state.existingLayersLoading) {
+    return;
+  }
+
+  state.existingLayersLoading = true;
+  state.existingLayersError = "";
+  syncAddLayerPanel();
+
+  try {
+    state.existingLayers = await getSupabaseCatalog();
+    state.existingLayersLoaded = true;
+  } catch (error) {
+    state.existingLayers = [];
+    state.existingLayersError = error?.message ?? "Failed to load layers.";
+  } finally {
+    state.existingLayersLoading = false;
+    syncAddLayerPanel();
+  }
 }
 
 function toggleStyleRow(rowId) {
@@ -1030,6 +1812,7 @@ function toggleStyleRow(rowId) {
 function getReorderContainer(scope) {
   if (scope === "land") return controls.landChildren;
   if (scope === "earth") return controls.earthChildren;
+  if (scope === "dynamic") return controls.dynamicRows;
   return controls.rows;
 }
 
@@ -1071,12 +1854,22 @@ function moveDraggedRow(drag, direction) {
   if (direction === "up") drag.startY -= adjacentHeight;
   else drag.startY += adjacentHeight;
 
-  rebuildRenderOrderFromDom();
-  const orderKey = state.layerState.order.join("|");
+  if (drag.scope === "dynamic") {
+    rebuildDynamicLayerOrderFromDom();
+  } else {
+    rebuildRenderOrderFromDom();
+  }
+  const orderKey = drag.scope === "dynamic"
+    ? getDynamicLayers().map((layer) => layer.id).join("|")
+    : state.layerState.order.join("|");
   if (orderKey !== drag.lastOrderKey) {
     drag.lastOrderKey = orderKey;
-    persistLayerState();
-    updateOverlay();
+    if (drag.scope === "dynamic") {
+      updateOverlayLayersOnly();
+    } else {
+      persistLayerState();
+      updateOverlay();
+    }
   }
 
   return { adjacentHeight };
@@ -1096,20 +1889,25 @@ function bindRowReordering() {
   function activateDrag(drag) {
     drag.dragging = true;
     const rowId = drag.rowElement.dataset.rowId;
-    if (rowId === "ocean" || rowId === "graticules") {
+    if (drag.scope === "dynamic") {
+      const layerId = drag.rowElement.dataset.dynamicLayerId;
+      state.dynamicExpandedLayerIds.delete(layerId);
+      state.activeDynamicStylePanels.delete(layerId);
+      drag.rowElement.querySelector(":scope > .earthlab-row-children")?.setAttribute("hidden", "");
+    } else if (rowId === "ocean" || rowId === "graticules") {
       state.expandedRows[rowId] = false;
-    }
-    if (rowId === "land") {
+      syncControlsFromState();
+    } else if (rowId === "land") {
       state.expandedRows.land = false;
       state.activeChildPanelByRow.land = null;
-    }
-    if (rowId === "landFill" && state.activeChildPanelByRow.land === "fill") {
+      syncControlsFromState();
+    } else if (rowId === "landFill" && state.activeChildPanelByRow.land === "fill") {
       state.activeChildPanelByRow.land = null;
-    }
-    if (rowId === "landLine" && state.activeChildPanelByRow.land === "line") {
+      syncControlsFromState();
+    } else if (rowId === "landLine" && state.activeChildPanelByRow.land === "line") {
       state.activeChildPanelByRow.land = null;
+      syncControlsFromState();
     }
-    syncControlsFromState();
     if (drag.scope === "land") controls.landChildren.hidden = false;
     drag.rowElement.classList.add("earthlab-row-dragging");
     const rect = drag.rowElement.getBoundingClientRect();
@@ -1126,61 +1924,74 @@ function bindRowReordering() {
     }
   }, true);
 
-  controls.rows.querySelectorAll(".earthlab-row").forEach((rowElement) => {
-    rowElement.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
+  function startPendingDrag(rowElement, event) {
+    if (event.button !== 0) return;
 
-      const target = getElementTarget(event);
-      if (!target) return;
-      if (rowElement.dataset.rowId === "earth") return;
-      if (target.closest(".earthlab-row") !== rowElement) return;
-      if (
-        target.closest(".earthlab-row-style") ||
-        target.closest("input, textarea, select") ||
-        target.closest(".earthlab-color-swatch")
-      ) return;
+    const target = getElementTarget(event);
+    if (!target) return;
+    if (!rowElement.dataset.reorderScope) return;
+    if (rowElement.dataset.rowId === "earth") return;
+    if (target.closest(".earthlab-row") !== rowElement) return;
+    if (
+      target.closest(".earthlab-row-style") ||
+      target.closest("input, textarea, select") ||
+      target.closest(".earthlab-color-swatch")
+    ) return;
 
-      const pending = {
-        pointerId: event.pointerId,
-        rowElement,
-        scope: rowElement.dataset.reorderScope,
-        startX: event.clientX,
-        startY: event.clientY,
-        dragging: false,
-        lastOrderKey: null,
-        anchorTop: 0,
-        anchorBottom: 0,
-        provisional: null,
-      };
+    const pending = {
+      pointerId: event.pointerId,
+      rowElement,
+      scope: rowElement.dataset.reorderScope,
+      startX: event.clientX,
+      startY: event.clientY,
+      dragging: false,
+      lastOrderKey: null,
+      anchorTop: 0,
+      anchorBottom: 0,
+      provisional: null,
+    };
 
-      if (event.pointerType === "touch") {
-        holdTimer = setTimeout(() => {
-          holdTimer = null;
-          rowElement.setPointerCapture(pending.pointerId);
-          state.drag = pending;
-          activateDrag(pending);
-        }, 250);
+    if (event.pointerType === "touch") {
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        rowElement.setPointerCapture(pending.pointerId);
+        state.drag = pending;
+        activateDrag(pending);
+      }, 250);
 
-        const cancelOnMove = (moveEvent) => {
-          if (moveEvent.pointerId !== pending.pointerId) return;
-          const dist = Math.hypot(moveEvent.clientX - pending.startX, moveEvent.clientY - pending.startY);
-          if (dist > 8) {
-            cancelHold();
-            document.removeEventListener("pointermove", cancelOnMove);
-          }
-        };
-        const cancelOnUp = (upEvent) => {
-          if (upEvent.pointerId !== pending.pointerId) return;
+      const cancelOnMove = (moveEvent) => {
+        if (moveEvent.pointerId !== pending.pointerId) return;
+        const dist = Math.hypot(moveEvent.clientX - pending.startX, moveEvent.clientY - pending.startY);
+        if (dist > 8) {
           cancelHold();
           document.removeEventListener("pointermove", cancelOnMove);
-          document.removeEventListener("pointerup", cancelOnUp);
-        };
-        document.addEventListener("pointermove", cancelOnMove);
-        document.addEventListener("pointerup", cancelOnUp);
-      } else {
-        state.drag = pending;
-      }
+        }
+      };
+      const cancelOnUp = (upEvent) => {
+        if (upEvent.pointerId !== pending.pointerId) return;
+        cancelHold();
+        document.removeEventListener("pointermove", cancelOnMove);
+        document.removeEventListener("pointerup", cancelOnUp);
+      };
+      document.addEventListener("pointermove", cancelOnMove);
+      document.addEventListener("pointerup", cancelOnUp);
+    } else {
+      state.drag = pending;
+    }
+  }
+
+  controls.rows.querySelectorAll(".earthlab-row").forEach((rowElement) => {
+    rowElement.addEventListener("pointerdown", (event) => {
+      startPendingDrag(rowElement, event);
     });
+  });
+
+  controls.dynamicRows.addEventListener("pointerdown", (event) => {
+    const rowElement = getElementTarget(event)?.closest(".earthlab-row");
+    if (!rowElement || rowElement.parentElement !== controls.dynamicRows) {
+      return;
+    }
+    startPendingDrag(rowElement, event);
   });
 
   document.addEventListener("pointermove", (event) => {
@@ -1256,6 +2067,10 @@ function bindRowReordering() {
       drag.rowElement.style.transform = "";
       drag.rowElement.classList.remove("earthlab-row-dragging");
       syncRowOrderFromState();
+      if (drag.scope === "dynamic") {
+        persistLayerState();
+        syncControlsFromState();
+      }
       suppressRowClickUntil = Date.now() + 180;
     }
 
@@ -1271,6 +2086,10 @@ function bindRowReordering() {
       drag.rowElement.style.transform = "";
       drag.rowElement.classList.remove("earthlab-row-dragging");
       syncRowOrderFromState();
+      if (drag.scope === "dynamic") {
+        persistLayerState();
+        syncControlsFromState();
+      }
     }
 
     state.drag = null;
@@ -1438,20 +2257,12 @@ function bindControls() {
     event.stopPropagation();
     state.panelCollapsed = !state.panelCollapsed;
     if (state.panelCollapsed) {
-      state.earthLayersExpanded = false;
-      state.earthExpanded = false;
-      state.expandedRows.ocean = false;
-      state.expandedRows.graticules = false;
-      state.expandedRows.land = false;
-      state.activeChildPanelByRow.land = null;
-      state.appearanceExpanded = false;
-      state.appearanceGroupExpanded = false;
-      state.activeAppearancePanels.background = false;
-      state.activeAppearancePanels.settings = false;
+      collapseMenuSections();
     }
     syncPanelCollapsed();
     syncEarthLayers();
     syncControlsFromState();
+    syncAddLayerPanel();
   });
 
   controls.earthLayersBtn.addEventListener("click", (event) => {
@@ -1459,8 +2270,13 @@ function bindControls() {
     state.earthLayersExpanded = !state.earthLayersExpanded;
     if (state.earthLayersExpanded) {
       state.earthExpanded = true;
+      state.appearanceExpanded = false;
+      state.appearanceGroupExpanded = false;
+      state.activeAppearancePanels.background = false;
+      state.activeAppearancePanels.settings = false;
     }
     syncEarthLayers();
+    syncControlsFromState();
   });
 
   controls.appearanceBtn.addEventListener("click", (event) => {
@@ -1468,12 +2284,146 @@ function bindControls() {
     state.appearanceExpanded = !state.appearanceExpanded;
     if (state.appearanceExpanded) {
       state.appearanceGroupExpanded = true;
+      state.earthLayersExpanded = false;
+      state.earthExpanded = false;
+      state.expandedRows.ocean = false;
+      state.expandedRows.graticules = false;
+      state.expandedRows.land = false;
+      state.activeChildPanelByRow.land = null;
     } else {
       state.appearanceGroupExpanded = false;
       state.activeAppearancePanels.background = false;
       state.activeAppearancePanels.settings = false;
     }
+    syncEarthLayers();
     syncControlsFromState();
+  });
+
+  controls.addLayerBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.addLayerPanelOpen = !state.addLayerPanelOpen;
+    if (state.addLayerPanelOpen) {
+      state.addLayerActionError = "";
+      void ensureExistingLayersLoaded();
+    }
+    syncAddLayerPanel();
+  });
+
+  controls.addLayerSearchInput.addEventListener("input", (event) => {
+    state.addLayerSearch = event.target.value;
+    state.addLayerActionError = "";
+    renderExistingLayerList();
+  });
+
+  controls.addLayerExistingList.addEventListener("click", (event) => {
+    const target = getElementTarget(event);
+    const item = target?.closest(".earthlab-existing-item");
+    const layerId = item?.dataset?.layerId;
+    if (!layerId) {
+      return;
+    }
+    event.stopPropagation();
+    void addExistingLayerToMap(layerId);
+  });
+
+  controls.dynamicRows.addEventListener("click", (event) => {
+    const target = getElementTarget(event);
+    if (!target) {
+      return;
+    }
+
+    const toggle = target?.closest("[data-dynamic-layer-toggle]");
+    const layerId = toggle?.dataset?.dynamicLayerToggle;
+    if (layerId) {
+      const layer = getDynamicLayers().find((entry) => entry.id === layerId);
+      if (!layer) {
+        return;
+      }
+      event.stopPropagation();
+      layer.visible = layer.visible === false;
+      persistDynamicLayers();
+      if (layer.visible) {
+        void ensureDynamicLayerLoaded(layer.id);
+      }
+      updateOverlay();
+      return;
+    }
+
+    const channelToggle = target.closest("[data-dynamic-channel-toggle]");
+    if (channelToggle) {
+      const channelRow = channelToggle.closest("[data-dynamic-channel-row]");
+      const parentLayerId = channelRow?.dataset?.dynamicLayerId;
+      const channelId = channelToggle.dataset.dynamicChannelToggle;
+      const layer = getDynamicLayers().find((entry) => entry.id === parentLayerId);
+      const channel = getDynamicChannel(layer, channelId);
+      if (!channel) {
+        return;
+      }
+      event.stopPropagation();
+      channel.visible = channel.visible === false;
+      persistDynamicLayers();
+      updateOverlay();
+      return;
+    }
+
+    if (
+      target.closest(".earthlab-row-style") ||
+      target.closest("input, textarea, select") ||
+      target.closest(".earthlab-color-control")
+    ) {
+      return;
+    }
+
+    const channelRow = target.closest("[data-dynamic-channel-row]");
+    if (channelRow && controls.dynamicRows.contains(channelRow)) {
+      const parentLayerId = channelRow.dataset.dynamicLayerId;
+      const channelId = channelRow.dataset.dynamicChannelRow;
+      state.dynamicExpandedLayerIds.add(parentLayerId);
+      state.activeDynamicStylePanels.set(
+        parentLayerId,
+        state.activeDynamicStylePanels.get(parentLayerId) === channelId ? null : channelId,
+      );
+      event.stopPropagation();
+      syncControlsFromState();
+      return;
+    }
+
+    const parentRow = target.closest("[data-dynamic-layer-id]");
+    if (parentRow && parentRow.parentElement === controls.dynamicRows) {
+      const parentLayerId = parentRow.dataset.dynamicLayerId;
+      if (state.dynamicExpandedLayerIds.has(parentLayerId)) {
+        state.dynamicExpandedLayerIds.delete(parentLayerId);
+        state.activeDynamicStylePanels.delete(parentLayerId);
+      } else {
+        state.dynamicExpandedLayerIds.add(parentLayerId);
+      }
+      event.stopPropagation();
+      syncControlsFromState();
+    }
+  });
+
+  controls.dynamicRows.addEventListener("input", (event) => {
+    const target = getElementTarget(event);
+    if (!target?.matches("[data-dynamic-slider]")) {
+      return;
+    }
+    const layer = getDynamicLayers().find((entry) => entry.id === target.dataset.dynamicLayerId);
+    const channel = getDynamicChannel(layer, target.dataset.dynamicChannelId);
+    if (!channel) {
+      return;
+    }
+    const key = target.dataset.dynamicSlider;
+    const value = Number(target.value);
+    if (key === "opacity") {
+      channel.opacity = clampOpacity(value);
+    } else if (key === "width") {
+      channel.width = Math.max(0, value);
+    } else if (key === "radius") {
+      channel.radius = Math.max(1, value);
+    }
+    persistDynamicLayers();
+    updateDynamicLayerPresentation(layer.id, target.dataset.dynamicChannelId);
+    updateOverlayLayersOnly();
   });
 
   document.addEventListener("pointerdown", (event) => {
@@ -1488,21 +2438,28 @@ function bindControls() {
         control.close();
       }
     });
+    dynamicPaletteControls.forEach((control) => {
+      if (control.contains(target)) {
+        withinPaletteControl = true;
+      } else {
+        control.close();
+      }
+    });
 
     if (!controls.panel.contains(target)) {
       if (!state.panelCollapsed) {
         state.panelCollapsed = true;
+        collapseMenuSections();
         syncPanelCollapsed();
+        syncEarthLayers();
+        syncAddLayerPanel();
       }
-      state.expandedRows.ocean = false;
-      state.expandedRows.graticules = false;
-      state.expandedRows.land = false;
-      state.activeChildPanelByRow.land = null;
       syncControlsFromState();
       return;
     }
 
-    if (!controls.rows.contains(target) && !withinPaletteControl) {
+    const insideLayerRows = controls.rows.contains(target) || controls.dynamicRows.contains(target);
+    if (!insideLayerRows && !withinPaletteControl) {
       state.expandedRows.ocean = false;
       state.expandedRows.graticules = false;
       state.expandedRows.land = false;
@@ -1516,10 +2473,12 @@ function bindControls() {
 
 async function bootstrap() {
   setBootStage("boot");
+  const initialMapView = readMapView();
   syncRowOrderFromState();
   syncControlsFromState();
   syncPanelCollapsed();
   syncEarthLayers();
+  syncAddLayerPanel();
   mountPaletteControls();
   bindControls();
   bindReloadControls();
@@ -1541,16 +2500,17 @@ async function bootstrap() {
         },
       ],
     },
-    center: [0, 18],
-    zoom: 1.3,
-    bearing: 0,
-    pitch: 0,
+    center: initialMapView.center,
+    zoom: initialMapView.zoom,
+    bearing: initialMapView.bearing,
+    pitch: initialMapView.pitch,
     attributionControl: false,
   });
 
   state.map.on("move", () => {
     updateStatus();
   });
+  state.map.on("moveend", persistMapView);
   state.map.on("load", () => {
     state.overlay = new MapboxOverlay({
       interleaved: false,
@@ -1559,6 +2519,7 @@ async function bootstrap() {
     state.map.addControl(state.overlay);
     setBootStage("shell");
     updateStatus();
+    hydratePersistedDynamicLayers();
 
     void loadJson(LAND_LOW_URL)
       .then((landLow) => {
@@ -1637,12 +2598,17 @@ function bindMapName() {
   const saved = localStorage.getItem(MAP_NAME_KEY);
   if (saved) label.textContent = saved;
 
+  const wrapper = document.createElement("span");
+  wrapper.className = "earthlab-kicker-wrap";
+  label.insertAdjacentElement("beforebegin", wrapper);
+  wrapper.append(label);
+
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
   clearBtn.className = "earthlab-kicker-clear";
   clearBtn.textContent = "×";
   clearBtn.hidden = true;
-  label.insertAdjacentElement("afterend", clearBtn);
+  wrapper.append(clearBtn);
 
   function syncEmpty() {
     label.dataset.empty = String(label.textContent.trim() === "");

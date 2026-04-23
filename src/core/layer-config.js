@@ -1,4 +1,4 @@
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 const DEFAULT_APPEARANCE = {
   screen: {
     color: "#ffffff",
@@ -83,6 +83,7 @@ function buildDefaultLayerState() {
   return {
     version: STORAGE_VERSION,
     order: [...DEFAULT_RENDER_ORDER],
+    dynamicLayers: [],
     appearance: structuredClone(DEFAULT_APPEARANCE),
     layers: {
       earth: {
@@ -147,6 +148,112 @@ function coerceChannelState(channel, defaults = {}) {
   return next;
 }
 
+function normalizeHexColor(value, fallback = "#e74c3c") {
+  const normalized = String(value ?? "").trim().replace(/^#/, "").toLowerCase();
+  return /^[\da-f]{6}$/i.test(normalized) ? `#${normalized}` : fallback;
+}
+
+function normalizeGeometryTypes(geometryTypes = [], geometryType = "mixed") {
+  const source = Array.isArray(geometryTypes) && geometryTypes.length ? geometryTypes : [geometryType];
+  const normalized = source.map((value) => {
+    if (value === "point") return "point";
+    if (value === "line") return "line";
+    if (value === "polygon" || value === "area") return "polygon";
+    return null;
+  }).filter(Boolean);
+  return ["point", "line", "polygon"].filter((family) => normalized.includes(family));
+}
+
+function normalizeDynamicLayer(entry) {
+  if (!entry || typeof entry !== "object" || !entry.id) {
+    return null;
+  }
+
+  const geometryTypes = normalizeGeometryTypes(entry.geometryTypes, entry.geometryType ?? "mixed");
+  const style = entry.style && typeof entry.style === "object" ? entry.style : {};
+  const channels = normalizeDynamicChannels(entry.channels, geometryTypes, style);
+  return {
+    id: String(entry.id),
+    label: String(entry.label ?? "Untitled layer"),
+    source: entry.source === "supabase" ? "supabase" : "supabase",
+    geometryTypes,
+    geometryType: String(entry.geometryType ?? geometryTypes[0] ?? "mixed"),
+    visible: entry.visible !== false,
+    style: {
+      color: normalizeHexColor(style.color),
+      opacity: normalizeNumeric(style.opacity, 80),
+      lineWidth: Math.max(0, normalizeNumeric(style.lineWidth ?? style.weight, 2)),
+      pointRadius: Math.max(1, normalizeNumeric(style.pointRadius ?? style.radius, 6)),
+    },
+    channels,
+  };
+}
+
+function normalizeDynamicChannels(rawChannels = {}, geometryTypes = [], style = {}) {
+  const color = normalizeHexColor(style.color);
+  const opacity = normalizeNumeric(style.opacity, 80);
+  const lineWidth = Math.max(0, normalizeNumeric(style.lineWidth ?? style.weight, 2));
+  const pointRadius = Math.max(1, normalizeNumeric(style.pointRadius ?? style.radius, 6));
+  const channels = {};
+
+  if (geometryTypes.includes("polygon")) {
+    channels.fill = coerceChannelState(rawChannels?.fill, {
+      color,
+      opacity,
+      visible: true,
+    });
+    channels.line = coerceChannelState(rawChannels?.line, {
+      color,
+      opacity,
+      width: lineWidth,
+      visible: true,
+    });
+  }
+
+  if (geometryTypes.includes("line") && !channels.line) {
+    channels.line = coerceChannelState(rawChannels?.line, {
+      color,
+      opacity,
+      width: lineWidth,
+      visible: true,
+    });
+  }
+
+  if (geometryTypes.includes("point")) {
+    channels.point = coerceChannelState(rawChannels?.point, {
+      color,
+      opacity,
+      radius: pointRadius,
+      visible: true,
+    });
+    channels.pointLine = coerceChannelState(rawChannels?.pointLine, {
+      color: "#000000",
+      opacity: 100,
+      width: 1,
+      visible: true,
+    });
+  }
+
+  return channels;
+}
+
+function normalizeDynamicLayers(dynamicLayers) {
+  if (!Array.isArray(dynamicLayers)) {
+    return [];
+  }
+  const seen = new Set();
+  return dynamicLayers
+    .map(normalizeDynamicLayer)
+    .filter(Boolean)
+    .filter((entry) => {
+      if (seen.has(entry.id)) {
+        return false;
+      }
+      seen.add(entry.id);
+      return true;
+    });
+}
+
 function migrateLegacyState(legacy = {}) {
   const next = buildDefaultLayerState();
 
@@ -206,6 +313,7 @@ function normalizeLayerState(rawState) {
   const next = {
     version: STORAGE_VERSION,
     order: normalizeRenderOrder(rawState.order),
+    dynamicLayers: normalizeDynamicLayers(rawState.dynamicLayers),
     appearance: structuredClone(base.appearance),
     layers: structuredClone(base.layers),
   };
@@ -269,4 +377,5 @@ export {
   getLayerVisibility,
   normalizeLayerState,
   normalizeRenderOrder,
+  normalizeDynamicLayers,
 };

@@ -158,7 +158,7 @@
           </div>
 
           <div class="earthlab-rows" id="earthRows">
-            <article class="earthlab-row earthlab-row-parent" data-row-id="earth" data-reorder-id="earth" data-reorder-scope="top">
+            <article class="earthlab-row earthlab-row-parent" data-row-id="earth">
               <span class="earthlab-row-swatch" id="earthSwatch" aria-hidden="true"></span>
               <button class="earthlab-row-toggle" id="earthToggle" type="button" role="checkbox" aria-checked="true">
                 Earth
@@ -284,11 +284,26 @@
             </article>
           </div>
 
-          <button class="earthlab-add-layer" id="addLayerBtn" type="button">
+          <div class="earthlab-rows" id="dynamicRows" hidden></div>
+
+          <button class="earthlab-add-layer" id="addLayerBtn" type="button" aria-controls="addLayerPanel" aria-expanded="false">
             + Add layer
           </button>
-        </div>
 
+          <section class="earthlab-add-panel" id="addLayerPanel" aria-label="Add layer options" hidden>
+            <div class="earthlab-add-panel-body">
+              <label class="earthlab-existing-search">
+                <span class="earthlab-visually-hidden">Search existing layers</span>
+                <input id="addLayerSearchInput" type="search" placeholder="Search layers" autocomplete="off" spellcheck="false" />
+              </label>
+              <div class="earthlab-existing-placeholder" id="addLayerExistingList">
+                <span class="earthlab-existing-placeholder-title">Existing layers</span>
+                <span class="earthlab-existing-placeholder-copy">Supabase catalog loading will be wired in the next pass.</span>
+              </div>
+              <button class="earthlab-add-new-layer" id="addNewLayerBtn" type="button" aria-label="Create new layer">+</button>
+            </div>
+          </section>
+        </div>
       </section>
       <button class="earthlab-reload" id="reloadBtn" type="button" title="Reload" aria-label="Reload page"></button>
       <menu class="earthlab-reload-menu" id="reloadMenu" hidden>
