@@ -48,7 +48,7 @@ const state = {
     land: null,
   },
   drag: null,
-  panelCollapsed: false,
+  panelCollapsed: true,
   earthLayersExpanded: true,
   earthExpanded: true,
 };

@@ -8,10 +8,10 @@ const RENDER_ORDER_TO_LAYER = {
 };
 
 const DEFAULT_RENDER_ORDER = [
-  "ocean.fill",
-  "graticules.line",
-  "land.line",
   "land.fill",
+  "land.line",
+  "graticules.line",
+  "ocean.fill",
 ];
 
 const LAYER_DEFS = {
