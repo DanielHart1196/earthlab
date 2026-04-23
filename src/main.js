@@ -630,7 +630,7 @@ function updateOverlay() {
 
 function syncPanelCollapsed() {
   controls.panel.dataset.collapsed = String(state.panelCollapsed);
-  controls.panelCloseBtn.textContent = state.panelCollapsed ? "+" : "×";
+  controls.panelCloseBtn.textContent = state.panelCollapsed ? "=" : "×";
   controls.panelCloseBtn.setAttribute("aria-label", state.panelCollapsed ? "Open panel" : "Close panel");
 }
 
