@@ -24,8 +24,12 @@ const OCEAN_RING = [[
 ]];
 
 const STORAGE_KEY = "earthlab.earth.style.v1";
+const MAP_NAME_KEY = "earthlab.mapName.v1";
 const HORIZON_CLIP_EPSILON = 0.002;
 const PALETTE_BINDINGS = [
+  { controlId: "backgroundColorControl", appearanceKind: "screen" },
+  { controlId: "settingsColorControl", appearanceKind: "settings" },
+  { controlId: "settingsLineColorControl", appearanceKind: "settings", appearanceKey: "lineColor" },
   { controlId: "oceanColorControl", layerId: "ocean", channelId: "fill" },
   { controlId: "graticulesColorControl", layerId: "graticules", channelId: "line" },
   { controlId: "landFillColorControl", layerId: "land", channelId: "fill" },
@@ -47,6 +51,9 @@ const state = {
   activeChildPanelByRow: {
     land: null,
   },
+  appearanceExpanded: false,
+  appearanceGroupExpanded: false,
+  activeAppearancePanels: { background: false, settings: false },
   drag: null,
   panelCollapsed: true,
   earthLayersExpanded: true,
@@ -132,10 +139,31 @@ if (hemisphereClip.enabled > 0.5) {
 const hemisphereClipExtension = new HemisphereClipExtension();
 
 const controls = {
+  app: document.getElementById("app"),
   panel: document.querySelector(".earthlab-panel"),
   panelCloseBtn: document.getElementById("panelCloseBtn"),
   earthLayersBtn: document.getElementById("earthLayersBtn"),
+  appearanceBtn: document.getElementById("appearanceBtn"),
   layerStack: document.querySelector(".earthlab-layer-stack"),
+  appearanceRows: document.getElementById("appearanceRows"),
+  appearanceSwatch: document.getElementById("appearanceSwatch"),
+  appearanceToggle: document.getElementById("appearanceToggle"),
+  appearanceChildren: document.getElementById("appearanceChildren"),
+  backgroundSwatch: document.getElementById("backgroundSwatch"),
+  settingsSwatch: document.getElementById("settingsSwatch"),
+  backgroundToggle: document.getElementById("backgroundToggle"),
+  settingsToggle: document.getElementById("settingsToggle"),
+  backgroundStyle: document.getElementById("backgroundStyle"),
+  settingsStyle: document.getElementById("settingsStyle"),
+  backgroundColorValue: document.getElementById("backgroundColorValue"),
+  settingsColorValue: document.getElementById("settingsColorValue"),
+  settingsLineColorValue: document.getElementById("settingsLineColorValue"),
+  backgroundOpacitySlider: document.getElementById("backgroundOpacitySlider"),
+  settingsOpacitySlider: document.getElementById("settingsOpacitySlider"),
+  settingsLineOpacitySlider: document.getElementById("settingsLineOpacitySlider"),
+  backgroundOpacityValue: document.getElementById("backgroundOpacityValue"),
+  settingsOpacityValue: document.getElementById("settingsOpacityValue"),
+  settingsLineOpacityValue: document.getElementById("settingsLineOpacityValue"),
   earthSwatch: document.getElementById("earthSwatch"),
   earthToggle: document.getElementById("earthToggle"),
   earthChildren: document.getElementById("earthChildren"),
@@ -242,6 +270,10 @@ function getLayer(layerId) {
   return state.layerState.layers[layerId];
 }
 
+function getAppearance(kind) {
+  return state.layerState.appearance?.[kind] ?? null;
+}
+
 function getChannel(layerId, channelId) {
   return getLayer(layerId)?.channels?.[channelId] ?? null;
 }
@@ -289,6 +321,38 @@ function syncRowOrderFromState() {
   });
 }
 
+function applyRowDepthParity(root = controls.layerStack) {
+  if (!root) {
+    return;
+  }
+
+  function walk(container, depth) {
+    Array.from(container.children).forEach((child) => {
+      if (!(child instanceof HTMLElement)) {
+        return;
+      }
+
+      if (child.classList.contains("earthlab-row")) {
+        child.dataset.depth = String(depth);
+        child.dataset.depthParity = depth % 2 === 0 ? "even" : "odd";
+        Array.from(child.children).forEach((grandChild) => {
+          if (
+            grandChild instanceof HTMLElement &&
+            grandChild.classList.contains("earthlab-row-children")
+          ) {
+            walk(grandChild, depth + 1);
+          }
+        });
+        return;
+      }
+
+      walk(child, depth);
+    });
+  }
+
+  walk(root, 0);
+}
+
 function rebuildRenderOrderFromDom() {
   const nextOrder = [];
 
@@ -313,8 +377,36 @@ function svgEl(name) {
 }
 
 function getLegendSpec(rowId) {
+  if (rowId === "appearance") {
+    return { kind: "gear" };
+  }
+
+  if (rowId === "background") {
+    const appearance = getAppearance("screen");
+    return {
+      kind: "polygon",
+      fillColor: appearance?.color ?? "#000000",
+      fillOpacity: appearance?.opacity ?? 100,
+      lineColor: "#ffffff",
+      lineOpacity: 0,
+      lineWidth: 0,
+    };
+  }
+
+  if (rowId === "settings") {
+    const appearance = getAppearance("settings");
+    return {
+      kind: "polygon",
+      fillColor: appearance?.color ?? "#000000",
+      fillOpacity: appearance?.opacity ?? 30,
+      lineColor: appearance?.lineColor ?? "#000000",
+      lineOpacity: appearance?.lineOpacity ?? 100,
+      lineWidth: 1,
+    };
+  }
+
   if (rowId === "earth") {
-    return null;
+    return { kind: "globe" };
   }
 
   if (rowId === "ocean") {
@@ -452,8 +544,155 @@ function createLegendSvg(spec) {
   return svg;
 }
 
+function createToolbarGlobeSvg() {
+  const ocean = getChannel("ocean", "fill");
+  const landFill = getChannel("land", "fill");
+  const landLine = getChannel("land", "line");
+  const graticules = getChannel("graticules", "line");
+  const oceanColor = normalizeHexColor(ocean?.color) ?? "#ffffff";
+  const landColor = normalizeHexColor(landFill?.color) ?? "#ffffff";
+  const landLineColor = normalizeHexColor(landLine?.color) ?? "#000000";
+  const graticulesColor = normalizeHexColor(graticules?.color) ?? "#000000";
+  const oceanOpacity = clampOpacity(ocean?.visible !== false ? ocean?.opacity : 0) / 100;
+  const landOpacity = clampOpacity(landFill?.visible !== false ? landFill?.opacity : 0) / 100;
+  const landLineOpacity = clampOpacity(landLine?.visible !== false ? landLine?.opacity : 0) / 100;
+  const graticulesOpacity = clampOpacity(graticules?.visible !== false ? graticules?.opacity : 0) / 100;
+  const landLineWidth = Math.max(0.7, Math.min(1.8, Number(landLine?.width) || 1));
+  const graticulesWidth = Math.max(0.7, Math.min(1.6, Number(graticules?.width) || 1));
+  const landPaths = getToolbarAustraliaPaths();
+  const graticulePaths = [
+    "M13 2.4C11 5.2 10.1 9 10.1 13C10.1 17 11 20.8 13 23.6",
+    "M2.4 13C5.2 11.5 8.8 10.8 13 10.8C17.2 10.8 20.8 11.5 23.6 13",
+  ];
+
+  const svg = svgEl("svg");
+  svg.setAttribute("viewBox", "0 0 26 26");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const clipId = `earthlab-toolbar-globe-clip-${Math.random().toString(36).slice(2, 8)}`;
+
+  const defs = svgEl("defs");
+  const clipPath = svgEl("clipPath");
+  clipPath.setAttribute("id", clipId);
+  const clipCircle = svgEl("circle");
+  clipCircle.setAttribute("cx", "13");
+  clipCircle.setAttribute("cy", "13");
+  clipCircle.setAttribute("r", "11");
+  clipPath.append(clipCircle);
+  defs.append(clipPath);
+  svg.append(defs);
+
+  const contentGroup = svgEl("g");
+  contentGroup.setAttribute("clip-path", `url(#${clipId})`);
+  svg.append(contentGroup);
+
+  const renderLayerIds = [...normalizeRenderOrder(state.layerState.order)].reverse();
+  renderLayerIds.forEach((layerId) => {
+    if (layerId === "ocean.fill") {
+      const globe = svgEl("circle");
+      globe.setAttribute("cx", "13");
+      globe.setAttribute("cy", "13");
+      globe.setAttribute("r", "11");
+      globe.setAttribute("fill", oceanColor);
+      globe.setAttribute("fill-opacity", String(oceanOpacity));
+      contentGroup.append(globe);
+      return;
+    }
+
+    if (layerId === "graticules.line") {
+      graticulePaths.forEach((pathData) => {
+        const path = svgEl("path");
+        path.setAttribute("d", pathData);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", graticulesColor);
+        path.setAttribute("stroke-opacity", String(graticulesOpacity));
+        path.setAttribute("stroke-width", String(graticulesWidth));
+        path.setAttribute("stroke-linecap", "round");
+        contentGroup.append(path);
+      });
+      return;
+    }
+
+    if (layerId === "land.fill") {
+      landPaths.forEach((pathData) => {
+        const path = svgEl("path");
+        path.setAttribute("d", pathData);
+        path.setAttribute("fill", landColor);
+        path.setAttribute("fill-opacity", String(landOpacity));
+        contentGroup.append(path);
+      });
+      return;
+    }
+
+    if (layerId === "land.line") {
+      landPaths.forEach((pathData) => {
+        const path = svgEl("path");
+        path.setAttribute("d", pathData);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", landLineColor);
+        path.setAttribute("stroke-opacity", String(landLineOpacity));
+        path.setAttribute("stroke-width", String(landLineWidth));
+        path.setAttribute("stroke-linejoin", "round");
+        path.setAttribute("stroke-linecap", "round");
+        contentGroup.append(path);
+      });
+    }
+  });
+
+  const outline = svgEl("circle");
+  outline.setAttribute("cx", "13");
+  outline.setAttribute("cy", "13");
+  outline.setAttribute("r", "11");
+  outline.setAttribute("fill", "none");
+  outline.setAttribute("stroke", "#000000");
+  outline.setAttribute("stroke-width", "1");
+  svg.append(outline);
+
+  return svg;
+}
+
+function createToolbarGearSvg() {
+  const svg = svgEl("svg");
+  svg.setAttribute("viewBox", "0 0 26 26");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const gear = svgEl("path");
+  gear.setAttribute("d", "M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z");
+  gear.setAttribute("fill", "#b8b8b8");
+  gear.setAttribute("fill-rule", "evenodd");
+  gear.setAttribute("stroke", "#000000");
+  gear.setAttribute("stroke-width", "0.55");
+  gear.setAttribute("stroke-linejoin", "round");
+  gear.setAttribute("transform", "translate(5 5)");
+  svg.append(gear);
+
+  return svg;
+}
+
+function renderToolbarIcons() {
+  controls.earthLayersBtn.replaceChildren(createToolbarGlobeSvg());
+  controls.appearanceBtn.replaceChildren(createToolbarGearSvg());
+}
+
 function renderLegendButton(button, spec) {
   if (!button) {
+    return;
+  }
+  if (spec?.kind === "globe") {
+    const svg = createToolbarGlobeSvg();
+    svg.classList.add("earthlab-row-globe-svg");
+    button.replaceChildren(svg);
+    return;
+  }
+  if (spec?.kind === "gear") {
+    const svg = createToolbarGearSvg();
+    svg.classList.add("earthlab-row-gear-svg");
+    button.replaceChildren(svg);
     return;
   }
   button.replaceChildren(createLegendSvg(spec));
@@ -463,17 +702,110 @@ function renderPaletteControls() {
   paletteControls.forEach((control) => control.render());
 }
 
+function getToolbarAustraliaPaths() {
+  const fallbackPaths = [
+    "M4.2 13.1C4.7 11.2 6.4 9.9 8.4 9.3C9.8 8.9 11 9.5 12.1 9.1C13.1 8.7 13.3 7.5 14 7.5C14.8 8.2 14.5 9.4 15.1 9.9C16.2 9.4 17.4 8.4 19.1 8.8C20.8 9.2 22 10.8 21.9 12.7C21.8 14.6 20.4 16.2 18.7 17.1C17.6 17.7 16.5 17.5 15.5 18.1C14.4 18.7 13.8 19.7 12.4 19.8C11.1 19.8 10.6 18.6 9.3 18.3C8.1 18.1 6.6 18.5 5.6 17.4C4.5 16.3 3.8 14.6 4.2 13.1Z",
+    "M18.1 19.4C18.7 19 19.5 19 20.1 19.5C20.3 20.1 19.9 20.8 19.2 21C18.5 21 18 20.4 18.1 19.4Z",
+  ];
+  const features = state.land?.features;
+  if (!Array.isArray(features)) {
+    return fallbackPaths;
+  }
+
+  const australiaFeatures = features.filter((feature) => {
+    const rings = feature.geometry?.type === "Polygon" ? feature.geometry.coordinates : [];
+    const points = rings.flat();
+    if (!points.length) {
+      return false;
+    }
+    const xs = points.map(([lon]) => lon);
+    const ys = points.map(([, lat]) => lat);
+    const minLon = Math.min(...xs);
+    const maxLon = Math.max(...xs);
+    const minLat = Math.min(...ys);
+    const maxLat = Math.max(...ys);
+    return minLon >= 112 && maxLon <= 154 && minLat >= -45 && maxLat <= -10;
+  });
+
+  const project = ([lon, lat]) => {
+    const x = 5 + ((lon - 112) / 42) * 16;
+    const y = 6 + ((-10 - lat) / 35) * 14;
+    return [Number(x.toFixed(2)), Number(y.toFixed(2))];
+  };
+
+  const paths = australiaFeatures
+    .flatMap((feature) => feature.geometry.coordinates)
+    .filter((ring) => Array.isArray(ring) && ring.length > 3)
+    .map((ring) => {
+      const projected = ring.map(project);
+      return projected
+        .map(([x, y], index) => `${index === 0 ? "M" : "L"}${x} ${y}`)
+        .join(" ")
+        .concat(" Z");
+    });
+
+  return paths.length ? paths : fallbackPaths;
+}
+
+function applyAppearanceStyles() {
+  const screen = getAppearance("screen");
+  const settings = getAppearance("settings");
+  const screenRgb = hexToRgb(screen?.color ?? "#000000");
+  const settingsRgb = hexToRgb(settings?.color ?? "#000000");
+  const settingsLineRgb = hexToRgb(settings?.lineColor ?? "#000000");
+  const screenOpacity = (Number(screen?.opacity) || 0) / 100;
+  const screenComposited = {
+    r: Math.round(screenRgb.r * screenOpacity),
+    g: Math.round(screenRgb.g * screenOpacity),
+    b: Math.round(screenRgb.b * screenOpacity),
+  };
+  const screenFill = `rgb(${screenComposited.r}, ${screenComposited.g}, ${screenComposited.b})`;
+  const settingsFill = `rgba(${settingsRgb.r}, ${settingsRgb.g}, ${settingsRgb.b}, ${(Number(settings?.opacity) || 0) / 100})`;
+  const settingsLineFill = `rgba(${settingsLineRgb.r}, ${settingsLineRgb.g}, ${settingsLineRgb.b}, ${(Number(settings?.lineOpacity) || 0) / 100})`;
+  const settingsOpacity = (Number(settings?.opacity) || 0) / 100;
+  const oddOpacity = Math.min(1, settingsOpacity * 1.6);
+  const rowBgOdd = `rgba(${settingsRgb.r}, ${settingsRgb.g}, ${settingsRgb.b}, ${oddOpacity})`;
+
+  document.body.style.backgroundColor = screenFill;
+  controls.app.style.backgroundColor = screenFill;
+  if (state.map?.getLayer("background")) {
+    state.map.setPaintProperty("background", "background-color", screenFill);
+    state.map.setPaintProperty("background", "background-opacity", 1);
+  }
+  document.documentElement.style.setProperty("--settings-surface-fill", settingsFill);
+  document.documentElement.style.setProperty("--settings-border-fill", settingsLineFill);
+  document.documentElement.style.setProperty("--row-bg-even", settingsFill);
+  document.documentElement.style.setProperty("--row-bg-odd", rowBgOdd);
+}
+
+function getScreenBackgroundFill() {
+  const screen = getAppearance("screen");
+  const screenRgb = hexToRgb(screen?.color ?? "#000000");
+  const screenOpacity = (Number(screen?.opacity) || 0) / 100;
+  return `rgb(${Math.round(screenRgb.r * screenOpacity)}, ${Math.round(screenRgb.g * screenOpacity)}, ${Math.round(screenRgb.b * screenOpacity)})`;
+}
+
 function mountPaletteControls() {
-  PALETTE_BINDINGS.forEach(({ controlId, layerId, channelId }) => {
+  PALETTE_BINDINGS.forEach(({ controlId, layerId, channelId, appearanceKind, appearanceKey = "color" }) => {
     const mount = document.getElementById(controlId);
     if (!mount || paletteControls.has(controlId)) {
       return;
     }
     const control = mountColorControl({
       mount,
-      initialValue: getChannel(layerId, channelId)?.color,
+      initialValue: appearanceKind ? getAppearance(appearanceKind)?.[appearanceKey] : getChannel(layerId, channelId)?.color,
       paletteStore,
       onChange(nextColor) {
+        if (appearanceKind) {
+          const appearance = getAppearance(appearanceKind);
+          if (!appearance) {
+            return;
+          }
+          appearance[appearanceKey] = nextColor;
+          persistLayerState();
+          updateOverlay();
+          return;
+        }
         const channel = getChannel(layerId, channelId);
         if (!channel) {
           return;
@@ -489,11 +821,16 @@ function mountPaletteControls() {
 }
 
 function syncControlsFromState() {
+  const screenAppearance = getAppearance("screen");
+  const settingsAppearance = getAppearance("settings");
   const oceanFill = getChannel("ocean", "fill");
   const graticulesLine = getChannel("graticules", "line");
   const landFill = getChannel("land", "fill");
   const landLine = getChannel("land", "line");
 
+  renderLegendButton(controls.appearanceSwatch, getLegendSpec("appearance"));
+  renderLegendButton(controls.backgroundSwatch, getLegendSpec("background"));
+  renderLegendButton(controls.settingsSwatch, getLegendSpec("settings"));
   renderLegendButton(controls.earthSwatch, getLegendSpec("earth"));
   renderLegendButton(controls.oceanSwatch, getLegendSpec("ocean"));
   renderLegendButton(controls.graticulesSwatch, getLegendSpec("graticules"));
@@ -507,6 +844,23 @@ function syncControlsFromState() {
   controls.landToggle.setAttribute("aria-checked", String(isLandGroupVisible()));
   controls.landFillToggle.setAttribute("aria-checked", String(getChannel("land", "fill")?.visible !== false));
   controls.landLineToggle.setAttribute("aria-checked", String(getChannel("land", "line")?.visible !== false));
+
+  controls.appearanceRows.hidden = !state.appearanceExpanded;
+  controls.appearanceBtn.dataset.active = String(state.appearanceExpanded);
+  controls.panel.dataset.appearanceOpen = String(state.appearanceExpanded);
+  controls.appearanceChildren.hidden = !state.appearanceGroupExpanded;
+  controls.backgroundStyle.hidden = !state.activeAppearancePanels.background;
+  controls.settingsStyle.hidden = !state.activeAppearancePanels.settings;
+
+  controls.backgroundOpacitySlider.value = String(screenAppearance?.opacity ?? 100);
+  controls.settingsOpacitySlider.value = String(settingsAppearance?.opacity ?? 80);
+  controls.settingsLineOpacitySlider.value = String(settingsAppearance?.lineOpacity ?? 100);
+  controls.backgroundColorValue.textContent = screenAppearance?.color ?? "";
+  controls.settingsColorValue.textContent = settingsAppearance?.color ?? "";
+  controls.settingsLineColorValue.textContent = settingsAppearance?.lineColor ?? "";
+  controls.backgroundOpacityValue.textContent = `${Math.round(Number(screenAppearance?.opacity ?? 100))}%`;
+  controls.settingsOpacityValue.textContent = `${Math.round(Number(settingsAppearance?.opacity ?? 80))}%`;
+  controls.settingsLineOpacityValue.textContent = `${Math.round(Number(settingsAppearance?.lineOpacity ?? 100))}%`;
 
   controls.oceanStyle.hidden = !state.expandedRows.ocean;
   controls.graticulesStyle.hidden = !state.expandedRows.graticules;
@@ -535,11 +889,17 @@ function syncControlsFromState() {
   controls.landLineOpacityValue.textContent = `${Math.round(Number(landLine?.opacity ?? 100))}%`;
   controls.landLineWidthValue.textContent = `${Number(landLine?.width ?? 1).toFixed(1)} px`;
 
+  paletteControls.get("backgroundColorControl")?.setValue(screenAppearance?.color);
+  paletteControls.get("settingsColorControl")?.setValue(settingsAppearance?.color);
+  paletteControls.get("settingsLineColorControl")?.setValue(settingsAppearance?.lineColor);
   paletteControls.get("oceanColorControl")?.setValue(oceanFill?.color);
   paletteControls.get("graticulesColorControl")?.setValue(graticulesLine?.color);
   paletteControls.get("landFillColorControl")?.setValue(landFill?.color);
   paletteControls.get("landLineColorControl")?.setValue(landLine?.color);
+  applyAppearanceStyles();
+  applyRowDepthParity();
   renderPaletteControls();
+  renderToolbarIcons();
 }
 
 function updateStatus() {
@@ -936,6 +1296,22 @@ function updateLandVisibilityFromChannels() {
 
 function bindControls() {
   [
+    ["appearanceToggle", () => {
+      state.appearanceExpanded = false;
+      state.appearanceGroupExpanded = false;
+      state.activeAppearancePanels.background = false;
+      state.activeAppearancePanels.settings = false;
+    }],
+    ["backgroundToggle", () => {
+      state.appearanceGroupExpanded = true;
+      state.activeAppearancePanels.background = !state.activeAppearancePanels.background;
+      state.appearanceExpanded = true;
+    }],
+    ["settingsToggle", () => {
+      state.appearanceGroupExpanded = true;
+      state.activeAppearancePanels.settings = !state.activeAppearancePanels.settings;
+      state.appearanceExpanded = true;
+    }],
     ["earthToggle", () => {
       setLayerVisible("earth", !(getLayer("earth")?.visible !== false));
     }],
@@ -973,6 +1349,9 @@ function bindControls() {
   });
 
   [
+    ["backgroundOpacitySlider", { appearanceKind: "screen", key: "opacity", numeric: true }],
+    ["settingsOpacitySlider", { appearanceKind: "settings", key: "opacity", numeric: true }],
+    ["settingsLineOpacitySlider", { appearanceKind: "settings", key: "lineOpacity", numeric: true }],
     ["oceanOpacitySlider", { layerId: "ocean", channelId: "fill", key: "opacity", numeric: true }],
     ["graticulesOpacitySlider", { layerId: "graticules", channelId: "line", key: "opacity", numeric: true }],
     ["graticulesWidthSlider", { layerId: "graticules", channelId: "line", key: "width", numeric: true }],
@@ -981,6 +1360,16 @@ function bindControls() {
     ["landLineWidthSlider", { layerId: "land", channelId: "line", key: "width", numeric: true }],
   ].forEach(([controlKey, target]) => {
     controls[controlKey].addEventListener("input", (event) => {
+      if (target.appearanceKind) {
+        const appearance = getAppearance(target.appearanceKind);
+        if (!appearance) {
+          return;
+        }
+        appearance[target.key] = target.numeric ? Number(event.currentTarget.value) : event.currentTarget.value;
+        persistLayerState();
+        updateOverlay();
+        return;
+      }
       const channel = getChannel(target.layerId, target.channelId);
       if (!channel) {
         return;
@@ -1011,12 +1400,36 @@ function bindControls() {
       }
 
       if (rowId === "earth") {
-        state.earthExpanded = !state.earthExpanded;
+        state.earthLayersExpanded = false;
+        state.earthExpanded = false;
+        state.expandedRows.ocean = false;
+        state.expandedRows.graticules = false;
+        state.expandedRows.land = false;
+        state.activeChildPanelByRow.land = null;
         syncEarthLayers();
         return;
       }
 
       toggleStyleRow(rowId);
+    });
+  });
+
+  controls.appearanceRows.querySelectorAll(".earthlab-row").forEach((rowElement) => {
+    const rowId = rowElement.dataset.rowId;
+    const toggleButton = rowElement.querySelector(":scope > .earthlab-row-toggle");
+    const stylePanel = rowElement.querySelector(":scope > .earthlab-row-style");
+
+    rowElement.addEventListener("click", (event) => {
+      const target = getElementTarget(event);
+      if (!rowId || !target || target.closest(".earthlab-row") !== rowElement) {
+        return;
+      }
+      if (toggleButton?.contains(target) || stylePanel?.contains(target)) {
+        return;
+      }
+      if (rowId === "appearance" || rowId === "background" || rowId === "settings") {
+        controls[`${rowId}Toggle`]?.click();
+      }
     });
   });
 
@@ -1029,7 +1442,23 @@ function bindControls() {
   controls.earthLayersBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     state.earthLayersExpanded = !state.earthLayersExpanded;
+    if (state.earthLayersExpanded) {
+      state.earthExpanded = true;
+    }
     syncEarthLayers();
+  });
+
+  controls.appearanceBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.appearanceExpanded = !state.appearanceExpanded;
+    if (state.appearanceExpanded) {
+      state.appearanceGroupExpanded = true;
+    } else {
+      state.appearanceGroupExpanded = false;
+      state.activeAppearancePanels.background = false;
+      state.activeAppearancePanels.settings = false;
+    }
+    syncControlsFromState();
   });
 
   document.addEventListener("pointerdown", (event) => {
@@ -1091,7 +1520,8 @@ async function bootstrap() {
           id: "background",
           type: "background",
           paint: {
-            "background-color": "#061018",
+            "background-color": getScreenBackgroundFill(),
+            "background-opacity": 1,
           },
         },
       ],
@@ -1185,6 +1615,56 @@ function bindReloadControls() {
   });
 }
 
+function bindMapName() {
+  const label = document.getElementById("mapNameLabel");
+  if (!label) return;
+
+  const saved = localStorage.getItem(MAP_NAME_KEY);
+  if (saved) label.textContent = saved;
+
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "earthlab-kicker-clear";
+  clearBtn.textContent = "×";
+  clearBtn.hidden = true;
+  label.insertAdjacentElement("afterend", clearBtn);
+
+  function syncEmpty() {
+    label.dataset.empty = String(label.textContent.trim() === "");
+  }
+
+  syncEmpty();
+
+  label.addEventListener("input", syncEmpty);
+
+  label.addEventListener("focus", () => {
+    clearBtn.hidden = false;
+  });
+
+  label.addEventListener("blur", (e) => {
+    if (e.relatedTarget === clearBtn) return;
+    clearBtn.hidden = true;
+    localStorage.setItem(MAP_NAME_KEY, label.textContent.trim());
+    syncEmpty();
+  });
+
+  clearBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  clearBtn.addEventListener("click", () => {
+    label.textContent = "";
+    syncEmpty();
+    label.focus();
+  });
+
+  label.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      label.blur();
+    }
+  });
+}
+
 bootstrap().catch((error) => {
   console.error(error);
 });
+
+bindMapName();

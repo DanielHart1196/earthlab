@@ -8,22 +8,26 @@
   --bg-bottom: #07141b;
   --panel-bg: rgba(9, 20, 29, 0.84);
   --panel-border: rgba(255, 255, 255, 0.14);
-  --text: #edf6fb;
-  --muted: rgba(237, 246, 251, 0.72);
-  --accent: #a7e2ff;
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, 0.58);
+  --accent: #ffffff;
+  --settings-surface-fill: rgba(0, 0, 0, 0.8);
+  --settings-border-fill: rgba(0, 0, 0, 1);
+  --settings-border-width: 1.5px;
+  --row-bg-even: rgba(0, 0, 0, 0.8);
+  --row-bg-odd: rgba(0, 0, 0, 1);
 }
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
 body {
   margin: 0;
   min-height: 100%;
-  background:
-    radial-gradient(circle at top left, rgba(68, 118, 145, 0.24), transparent 26%),
-    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+  background: #000000;
   color: var(--text);
   font-family: Georgia, "Times New Roman", serif;
 }
@@ -52,15 +56,6 @@ body {
   width: min(360px, calc(100vw - 36px));
   display: grid;
   gap: 16px;
-  padding: 18px 18px 16px;
-  border: 1px solid var(--panel-border);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
-    var(--panel-bg);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.84),
-    0 24px 48px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(14px);
 }
 
 .earthlab-panel-close {
@@ -75,23 +70,49 @@ body {
   border-color: transparent;
   box-shadow: none;
   backdrop-filter: none;
-  width: auto;
   gap: 0;
 }
 
-.earthlab-panel[data-collapsed="true"] .earthlab-kicker,
-.earthlab-panel[data-collapsed="true"] .earthlab-panel-action:not(#panelCloseBtn),
+.earthlab-panel[data-collapsed="true"] .earthlab-panel-action:not(#panelCloseBtn) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .earthlab-panel[data-collapsed="true"] .earthlab-layer-stack {
   display: none !important;
 }
 
+.earthlab-panel[data-collapsed="true"] #panelCloseBtn {
+  color: #000000;
+}
+
 .earthlab-kicker {
   margin: 0;
-  color: var(--accent);
-  font-size: 0.74rem;
+  color: #000000;
+  font-size: 1.2rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  cursor: text;
+  outline: none;
+  min-width: 48px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.earthlab-panel:not([data-collapsed="true"]) .earthlab-kicker {
+  outline: 2px solid #000000;
+}
+
+.earthlab-kicker-clear {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  margin-left: 0;
+  font-size: 1.2rem;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
 }
 
 .earthlab-panel-header h1 {
@@ -103,6 +124,7 @@ body {
 .earthlab-panel-bar {
   display: flex;
   align-items: center;
+  min-height: 44px;
   gap: 12px;
 }
 
@@ -117,38 +139,63 @@ body {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  min-height: 44px;
+  gap: 10px;
 }
 
 .earthlab-panel-action {
   appearance: none;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: auto;
+  height: auto;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
+  border: 0;
+  background: transparent;
   color: var(--muted);
   font: inherit;
   line-height: 1;
   cursor: pointer;
 }
 
-
-.earthlab-panel-action[data-active="false"] {
-  opacity: 0.4;
+.earthlab-panel-action::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
 }
 
+.earthlab-panel-action svg {
+  display: block;
+}
+
+#earthLayersBtn,
+#appearanceBtn {
+  color: inherit;
+}
+
+#earthLayersBtn svg,
+#appearanceBtn svg {
+  width: 36px;
+  height: 36px;
+}
+
+#panelCloseBtn {
+  color: #000000;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+
 .earthlab-panel-action:focus-visible {
-  outline: 2px solid rgba(167, 226, 255, 0.9);
+  outline: 2px solid rgba(255, 255, 255, 0.6);
   outline-offset: 2px;
 }
 
 .earthlab-rows {
   display: grid;
-  gap: 0;
+  gap: 8px;
 }
 
 .earthlab-layer-stack {
@@ -161,8 +208,8 @@ body {
   width: 100%;
   min-height: 46px;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  background: rgba(255, 255, 255, 0.035);
+  border: var(--settings-border-width) solid var(--settings-border-fill);
+  background: var(--settings-surface-fill);
   color: var(--text);
   font: inherit;
   text-align: center;
@@ -173,13 +220,12 @@ body {
     box-shadow 140ms ease;
 }
 
-.earthlab-add-layer:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.055);
+.earthlab-add-layer:active {
+  opacity: 1;
 }
 
 .earthlab-add-layer:focus-visible {
-  outline: 2px solid rgba(167, 226, 255, 0.9);
+  outline: 2px solid rgba(255, 255, 255, 0.6);
   outline-offset: 2px;
 }
 
@@ -190,8 +236,8 @@ body {
   flex-wrap: wrap;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  background: rgba(255, 255, 255, 0.035);
+  border: var(--settings-border-width) solid var(--settings-border-fill);
+  isolation: isolate;
   transition:
     border-color 140ms ease,
     background 140ms ease,
@@ -201,10 +247,6 @@ body {
   touch-action: none;
 }
 
-.earthlab-row:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.055);
-}
 
 .earthlab-row-swatch {
   display: inline-flex;
@@ -218,6 +260,16 @@ body {
 .earthlab-row-swatch-svg {
   display: block;
   overflow: visible;
+}
+
+.earthlab-row-globe-svg {
+  width: 30px;
+  height: 30px;
+}
+
+.earthlab-row-gear-svg {
+  width: 30px;
+  height: 30px;
 }
 
 .earthlab-row-toggle {
@@ -234,9 +286,6 @@ body {
   cursor: pointer;
 }
 
-.earthlab-row-toggle[aria-checked="false"] {
-  color: rgba(237, 246, 251, 0.42);
-}
 
 .earthlab-row-slot {
   flex: 1 1 auto;
@@ -257,7 +306,7 @@ body {
 .earthlab-row-children {
   grid-column: 1 / -1;
   display: grid;
-  gap: 0;
+  gap: 8px;
   margin-top: 0;
   padding-top: 2px;
 }
@@ -268,13 +317,24 @@ body {
 
 .earthlab-row-child {
   padding-left: 16px;
-  background: rgba(255, 255, 255, 0.028);
+}
+
+.earthlab-row[data-depth-parity="even"] {
+  background: var(--row-bg-even);
+}
+
+.earthlab-row[data-depth-parity="odd"] {
+  background: var(--row-bg-odd);
+}
+
+.earthlab-row-toggle[aria-checked="false"] {
+  color: var(--muted);
 }
 
 .earthlab-row-toggle:focus-visible,
 .earthlab-color-hex:focus-visible,
 .earthlab-color-save:focus-visible {
-  outline: 2px solid rgba(167, 226, 255, 0.9);
+  outline: 2px solid rgba(255, 255, 255, 0.6);
   outline-offset: 2px;
 }
 
@@ -291,9 +351,10 @@ body {
 }
 
 .earthlab-row-dragging {
-  border-color: rgba(167, 226, 255, 0.44);
-  background: rgba(167, 226, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  z-index: 100;
 }
 
 .earthlab-row-placeholder {
@@ -301,7 +362,7 @@ body {
 }
 
 .earthlab-row-style-label {
-  color: var(--muted);
+  color: var(--text);
   font-size: 0.8rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -316,7 +377,7 @@ body {
 
 .earthlab-row-style-value {
   min-width: 72px;
-  color: var(--text);
+  color: var(--muted);
   font-size: 0.8rem;
   letter-spacing: 0.04em;
   text-align: right;
@@ -488,6 +549,7 @@ body {
 .earthlab-range {
   width: 100%;
   margin: 0;
+  accent-color: rgba(255, 255, 255, 0.85);
 }
 
 .earthlab-status {
@@ -503,7 +565,7 @@ body {
 
 .earthlab-reload {
   position: absolute;
-  top: 18px;
+  bottom: 18px;
   right: 18px;
   z-index: 100;
   appearance: none;
@@ -511,11 +573,7 @@ body {
   height: 36px;
   padding: 0;
   border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.84),
-    0 4px 12px rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(14px);
+  background: var(--settings-surface-fill);
   color: var(--muted);
   cursor: pointer;
   display: flex;
@@ -535,24 +593,20 @@ body {
 }
 
 .earthlab-reload:focus-visible {
-  outline: 2px solid rgba(167, 226, 255, 0.9);
+  outline: 2px solid rgba(255, 255, 255, 0.6);
   outline-offset: 2px;
 }
 
 .earthlab-reload-menu {
   position: absolute;
-  top: 60px;
+  bottom: 60px;
   right: 18px;
   z-index: 100;
   margin: 0;
   padding: 6px;
   list-style: none;
   border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.84),
-    0 8px 24px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(14px);
+  background: var(--settings-surface-fill);
   display: grid;
   gap: 2px;
 }
@@ -587,15 +641,4 @@ body {
     padding: 16px 16px 14px;
   }
 
-  .earthlab-reload {
-    top: auto;
-    bottom: 18px;
-    right: 18px;
-  }
-
-  .earthlab-reload-menu {
-    top: auto;
-    bottom: 60px;
-    right: 18px;
-  }
 }

@@ -1,4 +1,16 @@
 const STORAGE_VERSION = 2;
+const DEFAULT_APPEARANCE = {
+  screen: {
+    color: "#ffffff",
+    opacity: 85,
+  },
+  settings: {
+    color: "#000000",
+    opacity: 30,
+    lineColor: "#000000",
+    lineOpacity: 100,
+  },
+};
 
 const RENDER_ORDER_TO_LAYER = {
   "ocean.fill": { layerId: "ocean", channelId: "fill" },
@@ -45,7 +57,7 @@ const LAYER_DEFS = {
         visible: true,
       },
       line: {
-        color: "#d9e4da",
+        color: "#000000",
         opacity: 100,
         width: 1,
         visible: true,
@@ -71,6 +83,7 @@ function buildDefaultLayerState() {
   return {
     version: STORAGE_VERSION,
     order: [...DEFAULT_RENDER_ORDER],
+    appearance: structuredClone(DEFAULT_APPEARANCE),
     layers: {
       earth: {
         visible: true,
@@ -193,8 +206,24 @@ function normalizeLayerState(rawState) {
   const next = {
     version: STORAGE_VERSION,
     order: normalizeRenderOrder(rawState.order),
+    appearance: structuredClone(base.appearance),
     layers: structuredClone(base.layers),
   };
+
+  Object.entries(base.appearance).forEach(([kind, defaults]) => {
+    const rawAppearance = rawState.appearance?.[kind];
+    if (!rawAppearance || typeof rawAppearance !== "object") {
+      return;
+    }
+    next.appearance[kind] = {
+      color: String(rawAppearance.color ?? defaults.color),
+      opacity: normalizeNumeric(rawAppearance.opacity, defaults.opacity),
+      ...(defaults.lineColor !== undefined ? {
+        lineColor: String(rawAppearance.lineColor ?? defaults.lineColor),
+        lineOpacity: normalizeNumeric(rawAppearance.lineOpacity, defaults.lineOpacity),
+      } : {}),
+    };
+  });
 
   Object.keys(base.layers).forEach((layerId) => {
     const rawLayer = rawState.layers?.[layerId];
@@ -232,6 +261,7 @@ function getLayerVisibility(layerState, layerId) {
 
 export {
   DEFAULT_RENDER_ORDER,
+  DEFAULT_APPEARANCE,
   LAYER_DEFS,
   RENDER_ORDER_TO_LAYER,
   buildDefaultLayerState,

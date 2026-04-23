@@ -75,17 +75,88 @@
       <section class="earthlab-panel" aria-label="Earth controls">
         <div class="earthlab-panel-header">
           <div class="earthlab-panel-bar">
-            <p class="earthlab-kicker">Earthlab</p>
+            <p class="earthlab-kicker" id="mapNameLabel" contenteditable="true" spellcheck="false" enterkeyhint="done">Layers</p>
             <div class="earthlab-panel-actions" aria-label="Earthlab view actions">
-              <button class="earthlab-panel-action" id="earthLayersBtn" type="button" aria-label="Collapse earth layers">🌐</button>
-              <button class="earthlab-panel-action" type="button" aria-label="Square view">□</button>
-              <button class="earthlab-panel-action" type="button" aria-label="Circle view">○</button>
+              <button class="earthlab-panel-action" id="earthLayersBtn" type="button" aria-label="Collapse earth layers"></button>
+              <button class="earthlab-panel-action" id="appearanceBtn" type="button" aria-label="Toggle appearance controls"></button>
               <button class="earthlab-panel-action" id="panelCloseBtn" type="button" aria-label="Close panel">×</button>
             </div>
           </div>
         </div>
 
         <div class="earthlab-layer-stack">
+          <div class="earthlab-rows" id="appearanceRows" hidden>
+            <article class="earthlab-row earthlab-row-parent" data-row-id="appearance">
+              <span class="earthlab-row-swatch" id="appearanceSwatch" aria-hidden="true"></span>
+              <button class="earthlab-row-toggle" id="appearanceToggle" type="button">
+                Settings
+              </button>
+              <span class="earthlab-row-slot" aria-hidden="true"></span>
+              <div class="earthlab-row-children" id="appearanceChildren" hidden>
+                <article class="earthlab-row earthlab-row-child" data-row-id="background">
+                  <span class="earthlab-row-swatch" id="backgroundSwatch" aria-hidden="true"></span>
+                  <button class="earthlab-row-toggle" id="backgroundToggle" type="button">
+                    Background
+                  </button>
+                  <span class="earthlab-row-slot" aria-hidden="true"></span>
+                  <div class="earthlab-row-style" id="backgroundStyle" hidden>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <div class="earthlab-row-style-label">Color</div>
+                        <div class="earthlab-row-style-value" id="backgroundColorValue"></div>
+                      </div>
+                      <div id="backgroundColorControl"></div>
+                    </div>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <label class="earthlab-row-style-label" for="backgroundOpacitySlider">Opacity</label>
+                        <div class="earthlab-row-style-value" id="backgroundOpacityValue"></div>
+                      </div>
+                      <input class="earthlab-range" type="range" id="backgroundOpacitySlider" min="0" max="100" step="1" value="100" />
+                    </div>
+                  </div>
+                </article>
+                <article class="earthlab-row earthlab-row-child" data-row-id="settings">
+                  <span class="earthlab-row-swatch" id="settingsSwatch" aria-hidden="true"></span>
+                  <button class="earthlab-row-toggle" id="settingsToggle" type="button">
+                    Legend
+                  </button>
+                  <span class="earthlab-row-slot" aria-hidden="true"></span>
+                  <div class="earthlab-row-style" id="settingsStyle" hidden>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <div class="earthlab-row-style-label">Color</div>
+                        <div class="earthlab-row-style-value" id="settingsColorValue"></div>
+                      </div>
+                      <div id="settingsColorControl"></div>
+                    </div>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <label class="earthlab-row-style-label" for="settingsOpacitySlider">Opacity</label>
+                        <div class="earthlab-row-style-value" id="settingsOpacityValue"></div>
+                      </div>
+                      <input class="earthlab-range" type="range" id="settingsOpacitySlider" min="0" max="100" step="1" value="80" />
+                    </div>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <div class="earthlab-row-style-label">Color</div>
+                        <div class="earthlab-row-style-value" id="settingsLineColorValue"></div>
+                      </div>
+                      <div id="settingsLineColorControl"></div>
+                    </div>
+                    <div class="earthlab-style-control">
+                      <div class="earthlab-style-control-header">
+                        <label class="earthlab-row-style-label" for="settingsLineOpacitySlider">Opacity</label>
+                        <div class="earthlab-row-style-value" id="settingsLineOpacityValue"></div>
+                      </div>
+                      <input class="earthlab-range" type="range" id="settingsLineOpacitySlider" min="0" max="100" step="1" value="100" />
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </article>
+          </div>
+
           <div class="earthlab-rows" id="earthRows">
             <article class="earthlab-row earthlab-row-parent" data-row-id="earth" data-reorder-id="earth" data-reorder-scope="top">
               <span class="earthlab-row-swatch" id="earthSwatch" aria-hidden="true"></span>
