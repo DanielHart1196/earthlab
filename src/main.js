@@ -1132,10 +1132,11 @@ function bindRowReordering() {
 
       const target = getElementTarget(event);
       if (!target) return;
+      if (rowElement.dataset.rowId === "earth") return;
       if (target.closest(".earthlab-row") !== rowElement) return;
       if (
         target.closest(".earthlab-row-style") ||
-        target.closest(".earthlab-row-toggle") ||
+        target.closest("input, textarea, select") ||
         target.closest(".earthlab-color-swatch")
       ) return;
 
@@ -1436,7 +1437,21 @@ function bindControls() {
   controls.panelCloseBtn.addEventListener("click", (event) => {
     event.stopPropagation();
     state.panelCollapsed = !state.panelCollapsed;
+    if (state.panelCollapsed) {
+      state.earthLayersExpanded = false;
+      state.earthExpanded = false;
+      state.expandedRows.ocean = false;
+      state.expandedRows.graticules = false;
+      state.expandedRows.land = false;
+      state.activeChildPanelByRow.land = null;
+      state.appearanceExpanded = false;
+      state.appearanceGroupExpanded = false;
+      state.activeAppearancePanels.background = false;
+      state.activeAppearancePanels.settings = false;
+    }
     syncPanelCollapsed();
+    syncEarthLayers();
+    syncControlsFromState();
   });
 
   controls.earthLayersBtn.addEventListener("click", (event) => {
