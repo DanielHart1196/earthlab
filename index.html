@@ -22,9 +22,7 @@
       body {
         margin: 0;
         min-height: 100%;
-        background:
-          radial-gradient(circle at top left, rgba(68, 118, 145, 0.24), transparent 26%),
-          linear-gradient(180deg, var(--earthlab-bg-top), var(--earthlab-bg-bottom));
+        background: #000000;
         color: var(--earthlab-text);
       }
 
@@ -44,7 +42,13 @@
         inset: 0;
       }
 
-      .earthlab-panel,
+      .earthlab-panel-header {
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      .earthlab-layer-stack,
+      .earthlab-share,
       .earthlab-reload {
         opacity: 0;
         visibility: hidden;
@@ -54,7 +58,9 @@
         transform: translateY(8px);
       }
 
-      body[data-earthlab-stage="ready"] .earthlab-panel,
+      body[data-earthlab-ui="ready"] .earthlab-panel-header,
+      body[data-earthlab-stage="ready"] .earthlab-layer-stack,
+      body[data-earthlab-stage="ready"] .earthlab-share,
       body[data-earthlab-stage="ready"] .earthlab-reload {
         opacity: 1;
         visibility: visible;
@@ -68,7 +74,7 @@
       }
     </style>
   </head>
-  <body data-earthlab-stage="boot">
+  <body data-earthlab-stage="boot" data-earthlab-ui="boot">
     <main class="earthlab-app" id="app">
       <div class="earthlab-map" id="map"></div>
 

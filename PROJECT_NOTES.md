@@ -45,6 +45,45 @@ The screen background is pre-composited against black and applied as an opaque R
 
 Settings line width is intentionally fixed in CSS at `1.5px`. Do not reintroduce variable settings width unless it is implemented as a non-layout-affecting visual stroke.
 
+## Startup and Load Order
+
+Startup should optimize for perceived speed and visual consistency:
+
+- page/app base background should be pure black from first paint
+- avoid any inline boot background that disagrees with the eventual map background
+- show the collapsed panel header as early as possible
+- keep secondary controls hidden until the map is meaningfully ready
+
+Current intended startup hierarchy:
+
+1. black base background
+2. collapsed header shell visible as soon as its styling is ready
+3. MapLibre background layer initializes
+4. low-detail land (`landLow`) loads and becomes the first meaningful globe render
+5. full panel body and secondary floating controls reveal at `ready`
+6. graticules and other deferred content load after that
+
+Important:
+
+- `ready` should stay tied to the first meaningful Earth render, not to every secondary layer finishing
+- `Share` and similar secondary floating controls should not appear before `ready`
+- the header (`Layers` / `=`) may be gated separately from the main panel body so it can appear earlier without flashing unstyled UI
+
+## Toolbar vs Sample Icons
+
+Toolbar icons and row samples serve different roles and should not share one renderer by default.
+
+- toolbar icons are stable controls
+- row samples are live previews
+
+Current intended behavior:
+
+- top toolbar globe uses fixed default Earth styling and default Earth order
+- top toolbar gear uses fixed default styling
+- Earth row sample remains live and should update with current Earth styling/order
+
+If a toolbar icon and a row sample ever diverge in behavior, split their render functions rather than forcing one shared renderer to handle both.
+
 ## Menu Behavior
 
 The globe button opens the Earth section with children visible.

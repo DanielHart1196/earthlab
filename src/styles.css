@@ -108,7 +108,7 @@ body {
   overflow-wrap: anywhere;
 }
 
-.earthlab-panel:not([data-collapsed="true"]) .earthlab-kicker {
+.earthlab-panel:not([data-collapsed="true"])[data-appearance-open="true"] .earthlab-kicker[data-empty="true"] {
   outline: 2px solid #000000;
 }
 

@@ -955,6 +955,111 @@ function createLegendSvg(spec) {
 }
 
 function createToolbarGlobeSvg() {
+  const oceanColor = "#2c6f92";
+  const landColor = "#6eaa6e";
+  const landLineColor = "#000000";
+  const graticulesColor = "#8fa9bc";
+  const oceanOpacity = 1;
+  const landOpacity = 1;
+  const landLineOpacity = 1;
+  const graticulesOpacity = 1;
+  const landLineWidth = 1;
+  const graticulesWidth = 1;
+  const landPaths = getToolbarAustraliaPaths();
+  const graticulePaths = [
+    "M13 2.4C11 5.2 10.1 9 10.1 13C10.1 17 11 20.8 13 23.6",
+    "M2.4 13C5.2 11.5 8.8 10.8 13 10.8C17.2 10.8 20.8 11.5 23.6 13",
+  ];
+
+  const svg = svgEl("svg");
+  svg.setAttribute("viewBox", "0 0 26 26");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const clipId = `earthlab-toolbar-globe-clip-${Math.random().toString(36).slice(2, 8)}`;
+
+  const defs = svgEl("defs");
+  const clipPath = svgEl("clipPath");
+  clipPath.setAttribute("id", clipId);
+  const clipCircle = svgEl("circle");
+  clipCircle.setAttribute("cx", "13");
+  clipCircle.setAttribute("cy", "13");
+  clipCircle.setAttribute("r", "11");
+  clipPath.append(clipCircle);
+  defs.append(clipPath);
+  svg.append(defs);
+
+  const contentGroup = svgEl("g");
+  contentGroup.setAttribute("clip-path", `url(#${clipId})`);
+  svg.append(contentGroup);
+
+  const renderLayerIds = [...normalizeRenderOrder(buildDefaultLayerState().order)].reverse();
+  renderLayerIds.forEach((layerId) => {
+    if (layerId === "ocean.fill") {
+      const globe = svgEl("circle");
+      globe.setAttribute("cx", "13");
+      globe.setAttribute("cy", "13");
+      globe.setAttribute("r", "11");
+      globe.setAttribute("fill", oceanColor);
+      globe.setAttribute("fill-opacity", String(oceanOpacity));
+      contentGroup.append(globe);
+      return;
+    }
+
+    if (layerId === "graticules.line") {
+      graticulePaths.forEach((pathData) => {
+        const path = svgEl("path");
+        path.setAttribute("d", pathData);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", graticulesColor);
+        path.setAttribute("stroke-opacity", String(graticulesOpacity));
+        path.setAttribute("stroke-width", String(graticulesWidth));
+        path.setAttribute("stroke-linecap", "round");
+        contentGroup.append(path);
+      });
+      return;
+    }
+
+    if (layerId === "land.fill") {
+      landPaths.forEach((pathData) => {
+        const path = svgEl("path");
+        path.setAttribute("d", pathData);
+        path.setAttribute("fill", landColor);
+        path.setAttribute("fill-opacity", String(landOpacity));
+        contentGroup.append(path);
+      });
+      return;
+    }
+
+    if (layerId === "land.line") {
+      landPaths.forEach((pathData) => {
+        const path = svgEl("path");
+        path.setAttribute("d", pathData);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", landLineColor);
+        path.setAttribute("stroke-opacity", String(landLineOpacity));
+        path.setAttribute("stroke-width", String(landLineWidth));
+        path.setAttribute("stroke-linejoin", "round");
+        path.setAttribute("stroke-linecap", "round");
+        contentGroup.append(path);
+      });
+    }
+  });
+
+  const outline = svgEl("circle");
+  outline.setAttribute("cx", "13");
+  outline.setAttribute("cy", "13");
+  outline.setAttribute("r", "11");
+  outline.setAttribute("fill", "none");
+  outline.setAttribute("stroke", "#000000");
+  outline.setAttribute("stroke-width", "1");
+  svg.append(outline);
+
+  return svg;
+}
+
+function createLegendGlobeSvg() {
   const ocean = getChannel("ocean", "fill");
   const landFill = getChannel("land", "fill");
   const landLine = getChannel("land", "line");
@@ -981,7 +1086,7 @@ function createToolbarGlobeSvg() {
   svg.setAttribute("height", "18");
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
-  const clipId = `earthlab-toolbar-globe-clip-${Math.random().toString(36).slice(2, 8)}`;
+  const clipId = `earthlab-legend-globe-clip-${Math.random().toString(36).slice(2, 8)}`;
 
   const defs = svgEl("defs");
   const clipPath = svgEl("clipPath");
@@ -1094,7 +1199,7 @@ function renderLegendButton(button, spec) {
     return;
   }
   if (spec?.kind === "globe") {
-    const svg = createToolbarGlobeSvg();
+    const svg = createLegendGlobeSvg();
     svg.classList.add("earthlab-row-globe-svg");
     button.replaceChildren(svg);
     return;
@@ -2804,7 +2909,10 @@ function bindShareControls() {
 
 function bindMapName() {
   const label = document.getElementById("mapNameLabel");
-  if (!label) return;
+  if (!label) {
+    document.body.dataset.earthlabUi = "ready";
+    return;
+  }
 
   const saved = localStorage.getItem(MAP_NAME_KEY);
   if (saved && !label.textContent.trim()) label.textContent = saved;
@@ -2853,6 +2961,8 @@ function bindMapName() {
       label.blur();
     }
   });
+
+  document.body.dataset.earthlabUi = "ready";
 }
 
 bootstrap().catch((error) => {
