@@ -753,6 +753,35 @@ body {
   justify-content: center;
 }
 
+.earthlab-share {
+  position: absolute;
+  bottom: 18px;
+  left: 18px;
+  z-index: 100;
+  appearance: none;
+  min-width: 72px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--panel-border);
+  background: var(--settings-surface-fill);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.earthlab-share:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.earthlab-share:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 2px;
+}
+
 .earthlab-reload::before {
   content: "↺";
   font-size: 1.2rem;

@@ -101,3 +101,98 @@ layer/channel state -> derived control rows -> derived legend sample -> derived 
 ```
 
 Avoid recreating v2's separate row model inside Earthlab.
+
+## Share Architecture
+
+The share system should be user-friendly first:
+
+- one click `Share`
+- copy a short URL
+- visiting that URL later should recreate the exact map configuration from the moment `Share` was clicked
+
+Do not use long encoded URLs as the primary product path. Keep any encoded hash export only as an optional future fallback/dev tool.
+
+### Canonical Model
+
+Use immutable snapshot records.
+
+Each share action should create a new saved snapshot, not mutate an older one. This gives the cleanest user mental model:
+
+- shared URLs are permanent
+- shared URLs reproduce exact historical state
+- later local edits do not silently change previously shared links
+
+Recommended table shape for now:
+
+- `map_shares`
+  - `id`
+  - `snapshot`
+  - `title`
+  - `created_at`
+
+Recommended future fields:
+
+- `user_id`
+- `slug`
+- `is_public`
+- `archived_at`
+
+### Snapshot Contents
+
+The snapshot should include:
+
+- map title
+- map view (`center`, `zoom`, `bearing`, `pitch`)
+- appearance state
+- Earth/static layer state
+- dynamic layer order
+- dynamic layer visibility
+- dynamic layer channel styling
+
+The snapshot should not include:
+
+- raw GeoJSON
+- fetched Supabase metadata that can be reloaded by layer id
+- transient UI state such as expanded/collapsed panels
+
+Dynamic layers should be restored by layer id and then hydrated through the normal Supabase loading path.
+
+### URL Shape
+
+Use a short share URL, for example:
+
+- `?share=<id>`
+
+Later, this can evolve cleanly to:
+
+- `/m/<slug>`
+
+Keep the underlying snapshot format the same so future custom URLs/slugs build on the same persistence model.
+
+### Product Direction
+
+Short-term:
+
+- unlimited immutable share snapshots
+- no management UI required yet
+- no user gating required yet
+
+Future:
+
+- per-user share limits
+- saved map management
+- custom URLs/slugs for paid users
+- a higher-level `maps` model on top of immutable published snapshots if needed
+
+### Implementation Sequence
+
+1. Add Supabase helpers for creating/fetching `map_shares`.
+2. Reuse the existing snapshot builder as the canonical saved payload.
+3. Change the Share button to save a snapshot and copy a short URL.
+4. On app boot, if a share id is present, load that snapshot before normal hydration.
+5. Apply snapshot state, then let dynamic layers load through the normal layer loader.
+6. Keep local storage as the user's local working state, but let shared URLs override it on initial load.
+
+### Principle
+
+The shared URL should represent a published immutable snapshot, not a live mutable working session.

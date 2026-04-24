@@ -12,6 +12,7 @@ import {
 } from "./core/layer-config.js";
 import { createPaletteStore, normalizeHexColor } from "./core/palette-store.js";
 import { getSupabaseCatalog, loadLayerFromSupabase } from "./sources/supabase/layer-loader.js";
+import { createMapShare, loadMapShare } from "./sources/supabase/map-share-loader.js";
 import { mountColorControl } from "./ui/color-control.js";
 import "./styles.css";
 
@@ -28,6 +29,7 @@ const OCEAN_RING = [[
 const STORAGE_KEY = "earthlab.earth.style.v1";
 const MAP_NAME_KEY = "earthlab.mapName.v1";
 const MAP_VIEW_KEY = "earthlab.mapView.v1";
+const SHARE_QUERY_KEY = "share";
 const HORIZON_CLIP_EPSILON = 0.002;
 const DEFAULT_MAP_VIEW = {
   center: [0, 18],
@@ -35,6 +37,7 @@ const DEFAULT_MAP_VIEW = {
   bearing: 0,
   pitch: 0,
 };
+const SHARE_SNAPSHOT_VERSION = 1;
 const PALETTE_BINDINGS = [
   { controlId: "backgroundColorControl", appearanceKind: "screen" },
   { controlId: "settingsColorControl", appearanceKind: "settings" },
@@ -291,6 +294,155 @@ function persistMapView() {
   } catch {
     // Ignore storage failures; camera persistence is non-critical.
   }
+}
+
+function getCurrentMapView() {
+  if (state.map) {
+    const center = state.map.getCenter();
+    return {
+      center: [center.lng, center.lat],
+      zoom: state.map.getZoom(),
+      bearing: state.map.getBearing(),
+      pitch: state.map.getPitch(),
+    };
+  }
+  return readMapView();
+}
+
+function normalizeMapView(view = DEFAULT_MAP_VIEW) {
+  const [lng, lat] = Array.isArray(view?.center) ? view.center.map(Number) : [];
+  const zoom = Number(view?.zoom);
+  const bearing = Number(view?.bearing);
+  const pitch = Number(view?.pitch);
+  if (
+    !Number.isFinite(lng) ||
+    !Number.isFinite(lat) ||
+    !Number.isFinite(zoom) ||
+    !Number.isFinite(bearing) ||
+    !Number.isFinite(pitch)
+  ) {
+    return { ...DEFAULT_MAP_VIEW, center: [...DEFAULT_MAP_VIEW.center] };
+  }
+  return {
+    center: [Math.max(-180, Math.min(180, lng)), Math.max(-85, Math.min(85, lat))],
+    zoom: Math.max(0, Math.min(24, zoom)),
+    bearing,
+    pitch: Math.max(0, Math.min(85, pitch)),
+  };
+}
+
+function getMapTitle() {
+  return document.getElementById("mapNameLabel")?.textContent?.trim() ?? "";
+}
+
+function setMapTitle(title) {
+  const label = document.getElementById("mapNameLabel");
+  if (!label) {
+    return;
+  }
+  label.textContent = String(title ?? "");
+  label.dataset.empty = String(label.textContent.trim() === "");
+}
+
+function buildShareSnapshot() {
+  const mapView = getCurrentMapView();
+  return {
+    v: SHARE_SNAPSHOT_VERSION,
+    meta: {
+      title: getMapTitle(),
+    },
+    mv: {
+      c: mapView.center,
+      z: mapView.zoom,
+      b: mapView.bearing,
+      p: mapView.pitch,
+    },
+    ls: {
+      order: [...(state.layerState.order ?? [])],
+      appearance: structuredClone(state.layerState.appearance ?? {}),
+      layers: structuredClone(state.layerState.layers ?? {}),
+      dynamicLayers: structuredClone(getDynamicLayers()),
+    },
+  };
+}
+
+function normalizeShareSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Number(snapshot.v) !== SHARE_SNAPSHOT_VERSION) {
+    return null;
+  }
+
+  return {
+    v: SHARE_SNAPSHOT_VERSION,
+    meta: {
+      title: String(snapshot.meta?.title ?? ""),
+    },
+    mv: normalizeMapView({
+      center: snapshot.mv?.c,
+      zoom: snapshot.mv?.z,
+      bearing: snapshot.mv?.b,
+      pitch: snapshot.mv?.p,
+    }),
+    ls: normalizeLayerState(snapshot.ls),
+  };
+}
+
+function applyShareSnapshot(snapshot) {
+  const normalized = snapshot?.v === SHARE_SNAPSHOT_VERSION &&
+    snapshot?.mv?.center &&
+    snapshot?.ls
+    ? snapshot
+    : normalizeShareSnapshot(snapshot);
+  if (!normalized) {
+    return null;
+  }
+
+  state.layerState = normalized.ls;
+  state.dynamicLayerData.clear();
+  state.dynamicDeckLayerCache.clear();
+  state.dynamicLayerErrors.clear();
+  state.loadingDynamicLayerIds.clear();
+  state.dynamicExpandedLayerIds.clear();
+  state.activeDynamicStylePanels.clear();
+  setMapTitle(normalized.meta?.title ?? "");
+
+  return normalized.mv;
+}
+
+function getShareIdFromLocation() {
+  return new URLSearchParams(window.location.search).get(SHARE_QUERY_KEY) ?? "";
+}
+
+async function readShareSnapshotFromLocation() {
+  const shareId = getShareIdFromLocation();
+  if (!shareId) {
+    return null;
+  }
+  try {
+    const share = await loadMapShare(shareId);
+    return normalizeShareSnapshot(share.snapshot);
+  } catch (error) {
+    console.warn("[earthlab] Failed to load shared map state from Supabase.", error);
+    return null;
+  }
+}
+
+async function createShareUrlFromCurrentState() {
+  const { id } = await createMapShare(buildShareSnapshot());
+  const url = new URL(window.location.href);
+  url.searchParams.set(SHARE_QUERY_KEY, id);
+  url.hash = "";
+  return url.toString();
+}
+
+async function copyShareUrl() {
+  const shareUrl = await createShareUrlFromCurrentState();
+  window.history.replaceState(null, "", shareUrl);
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(shareUrl);
+    return shareUrl;
+  }
+  window.prompt("Copy share URL", shareUrl);
+  return shareUrl;
 }
 
 function hexToRgb(hex, fallback = { r: 255, g: 255, b: 255 }) {
@@ -2473,7 +2625,9 @@ function bindControls() {
 
 async function bootstrap() {
   setBootStage("boot");
-  const initialMapView = readMapView();
+  const sharedSnapshot = await readShareSnapshotFromLocation();
+  const initialMapView = sharedSnapshot ? applyShareSnapshot(sharedSnapshot) ?? readMapView() : readMapView();
+  const hasSharedMapView = Boolean(sharedSnapshot?.mv);
   syncRowOrderFromState();
   syncControlsFromState();
   syncPanelCollapsed();
@@ -2482,6 +2636,7 @@ async function bootstrap() {
   mountPaletteControls();
   bindControls();
   bindReloadControls();
+  bindShareControls();
 
   state.map = new maplibregl.Map({
     container: "map",
@@ -2510,7 +2665,27 @@ async function bootstrap() {
   state.map.on("move", () => {
     updateStatus();
   });
-  state.map.on("moveend", persistMapView);
+  state.map.on("moveend", () => {
+    persistMapView();
+    updateStatus();
+  });
+
+  let sharedViewAnimated = false;
+  function easeToSharedMapViewAfterBoot() {
+    if (!hasSharedMapView || sharedViewAnimated) {
+      return;
+    }
+    sharedViewAnimated = true;
+    state.map.easeTo({
+      center: initialMapView.center,
+      zoom: initialMapView.zoom,
+      bearing: initialMapView.bearing,
+      pitch: initialMapView.pitch,
+      duration: 1400,
+      essential: true,
+    });
+  }
+
   state.map.on("load", () => {
     state.overlay = new MapboxOverlay({
       interleaved: false,
@@ -2527,6 +2702,7 @@ async function bootstrap() {
         state.land = landLow;
         setBootStage("ready");
         updateOverlay();
+        easeToSharedMapViewAfterBoot();
         defer(() => {
           void loadJson(GRATICULES_URL)
             .then((graticules) => {
@@ -2545,13 +2721,22 @@ async function bootstrap() {
             .then((graticules) => {
               state.graticules = graticules;
               updateOverlay();
+              easeToSharedMapViewAfterBoot();
             })
             .catch((graticulesError) => {
               console.warn("[earthlab] Failed to load graticules.", graticulesError);
+              easeToSharedMapViewAfterBoot();
             });
         });
       });
   });
+
+  window.earthlabShare = {
+    applySnapshot: applyShareSnapshot,
+    buildSnapshot: buildShareSnapshot,
+    createUrl: createShareUrlFromCurrentState,
+    readShare: readShareSnapshotFromLocation,
+  };
 }
 
 function bindReloadControls() {
@@ -2591,12 +2776,38 @@ function bindReloadControls() {
   });
 }
 
+function bindShareControls() {
+  const shareBtn = document.getElementById("shareBtn");
+  if (!shareBtn) {
+    return;
+  }
+
+  let feedbackTimer = null;
+
+  shareBtn.addEventListener("click", async () => {
+    shareBtn.disabled = true;
+    try {
+      await copyShareUrl();
+      shareBtn.textContent = "Copied";
+    } catch (error) {
+      console.warn("[earthlab] Failed to build share URL.", error);
+      shareBtn.textContent = "Error";
+    } finally {
+      shareBtn.disabled = false;
+      window.clearTimeout(feedbackTimer);
+      feedbackTimer = window.setTimeout(() => {
+        shareBtn.textContent = "Share";
+      }, 1200);
+    }
+  });
+}
+
 function bindMapName() {
   const label = document.getElementById("mapNameLabel");
   if (!label) return;
 
   const saved = localStorage.getItem(MAP_NAME_KEY);
-  if (saved) label.textContent = saved;
+  if (saved && !label.textContent.trim()) label.textContent = saved;
 
   const wrapper = document.createElement("span");
   wrapper.className = "earthlab-kicker-wrap";
