@@ -17,6 +17,7 @@
   --row-bg-even: rgba(0, 0, 0, 0.8);
   --row-bg-odd: rgba(0, 0, 0, 0.8);
   --kicker-height: calc(1.2rem + 4px + 4px);
+  --radius: 6px;
 }
 
 * {
@@ -57,6 +58,7 @@ body {
   width: min(360px, calc(100vw - 36px));
   display: grid;
   gap: 16px;
+  border-radius: var(--radius);
 }
 
 .earthlab-panel-close {
@@ -106,7 +108,7 @@ body {
   outline: none;
   min-width: 48px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius);
   overflow-wrap: anywhere;
   background: var(--screen-bg);
   border: none;
@@ -203,7 +205,7 @@ body {
   text-shadow: none;
   -webkit-text-fill-color: #000000;
   background: var(--screen-bg);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 2px 5px;
   height: var(--kicker-height);
   display: inline-flex;
@@ -233,6 +235,7 @@ body {
   min-height: 46px;
   padding: 10px 12px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   background: var(--settings-surface-fill);
   color: var(--text);
   font: inherit;
@@ -261,6 +264,7 @@ body {
   width: min(360px, calc(100vw - 36px));
   padding: 16px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   background: var(--settings-surface-fill);
 }
 
@@ -314,6 +318,7 @@ body {
   min-width: 0;
   padding: 9px 10px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.6);
   color: #000000;
   font: inherit;
@@ -336,6 +341,7 @@ body {
   place-items: center;
   padding: 18px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   color: var(--muted);
   text-align: center;
 }
@@ -356,6 +362,7 @@ body {
   min-width: 0;
   padding: 10px 12px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   background: var(--row-bg-even);
   color: var(--text);
   font: inherit;
@@ -395,6 +402,7 @@ body {
   min-height: 38px;
   padding: 6px 10px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   background: var(--row-bg-even);
   color: var(--text);
   font: inherit;
@@ -417,6 +425,7 @@ body {
   row-gap: 12px;
   padding: 10px 12px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   isolation: isolate;
   transition:
     border-color 140ms ease,
@@ -772,7 +781,7 @@ body {
   gap: 4px;
   padding: 2px 6px;
   height: var(--kicker-height);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background: var(--screen-bg);
   color: #000000;
   font-size: 1.2rem;
@@ -818,6 +827,7 @@ body {
   width: min(360px, calc(100vw - 36px));
   padding: 16px;
   border: var(--settings-border-width) solid var(--settings-border-fill);
+  border-radius: var(--radius);
   background: var(--settings-surface-fill);
 }
 
