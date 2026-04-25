@@ -172,6 +172,17 @@ function normalizeDynamicLayer(entry) {
   const geometryTypes = normalizeGeometryTypes(entry.geometryTypes, entry.geometryType ?? "mixed");
   const style = entry.style && typeof entry.style === "object" ? entry.style : {};
   const channels = normalizeDynamicChannels(entry.channels, geometryTypes, style);
+
+  const defaultChannelOrder = [];
+  if (geometryTypes.includes("polygon")) defaultChannelOrder.push("fill", "line");
+  else if (geometryTypes.includes("line")) defaultChannelOrder.push("line");
+  if (geometryTypes.includes("point")) defaultChannelOrder.push("point", "pointLine");
+
+  const savedOrder = Array.isArray(entry.channelOrder)
+    ? entry.channelOrder.filter((id) => typeof id === "string" && defaultChannelOrder.includes(id))
+    : [];
+  const channelOrder = savedOrder.length === defaultChannelOrder.length ? savedOrder : defaultChannelOrder;
+
   return {
     id: String(entry.id),
     label: String(entry.label ?? "Untitled layer"),
@@ -186,6 +197,7 @@ function normalizeDynamicLayer(entry) {
       pointRadius: Math.max(1, normalizeNumeric(style.pointRadius ?? style.radius, 6)),
     },
     channels,
+    channelOrder,
   };
 }
 

@@ -562,6 +562,13 @@ function syncRowOrderFromState() {
     if (rowElement) {
       controls.dynamicRows.append(rowElement);
     }
+    if (!Array.isArray(layer.channelOrder)) return;
+    const childrenContainer = controls.dynamicRows.querySelector(`[data-dynamic-layer-children="${layer.id}"]`);
+    if (!childrenContainer) return;
+    layer.channelOrder.forEach((channelId) => {
+      const channelRow = childrenContainer.querySelector(`:scope > [data-reorder-id="${channelId}"]`);
+      if (channelRow) childrenContainer.append(channelRow);
+    });
   });
 }
 
@@ -616,6 +623,17 @@ function rebuildRenderOrderFromDom() {
   state.layerState.order = normalizeRenderOrder(nextOrder);
 }
 
+function rebuildChannelOrderFromDom(layerId) {
+  const layer = getDynamicLayers().find((l) => l.id === layerId);
+  if (!layer) return;
+  const nextOrder = [];
+  const scope = `dynamic:${layerId}`;
+  document.querySelectorAll(`[data-reorder-scope="${scope}"]`).forEach((row) => {
+    nextOrder.push(row.dataset.reorderId);
+  });
+  if (nextOrder.length) layer.channelOrder = nextOrder;
+}
+
 function rebuildDynamicLayerOrderFromDom() {
   const byId = new Map(getDynamicLayers().map((layer) => [layer.id, layer]));
   const nextLayers = [];
@@ -630,6 +648,7 @@ function rebuildDynamicLayerOrderFromDom() {
 
   state.layerState.dynamicLayers = normalizeDynamicLayers([...nextLayers, ...byId.values()]);
 }
+
 
 function svgEl(name) {
   return document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -737,13 +756,14 @@ function getDynamicLayerLegendSpec(layer) {
     ? layer.geometryTypes
     : [layer?.geometryType].filter(Boolean);
   const uniqueTypes = [...new Set(geometryTypes.map((value) => (value === "area" ? "polygon" : value)))];
-  if (uniqueTypes.length !== 1) {
+  const primaryType = uniqueTypes.includes("polygon") ? "polygon" : uniqueTypes.includes("line") ? "line" : uniqueTypes[0];
+  if (!primaryType) {
     return null;
   }
 
   const style = getDefaultDynamicLayerStyle(layer?.style);
 
-  if (uniqueTypes[0] === "point") {
+  if (primaryType === "point") {
     const point = getDynamicChannel(layer, "point") ?? style;
     const line = getDynamicChannel(layer, "pointLine") ?? {};
     const opacity = layer?.visible === false || point.visible === false ? 0 : point.opacity;
@@ -759,7 +779,7 @@ function getDynamicLayerLegendSpec(layer) {
     };
   }
 
-  if (uniqueTypes[0] === "line") {
+  if (primaryType === "line") {
     const line = getDynamicChannel(layer, "line") ?? style;
     const opacity = layer?.visible === false || line.visible === false ? 0 : line.opacity;
     return {
@@ -770,11 +790,14 @@ function getDynamicLayerLegendSpec(layer) {
     };
   }
 
-  if (uniqueTypes[0] === "polygon") {
+  if (primaryType === "polygon") {
     const fill = getDynamicChannel(layer, "fill") ?? style;
     const line = getDynamicChannel(layer, "line") ?? style;
     const fillOpacity = layer?.visible === false || fill.visible === false ? 0 : fill.opacity;
     const lineOpacity = layer?.visible === false || line.visible === false ? 0 : line.opacity;
+    const drawOrder = Array.isArray(layer.channelOrder) && layer.channelOrder.length
+      ? [...layer.channelOrder].reverse().filter((id) => id === "fill" || id === "line")
+      : ["line", "fill"];
     return {
       kind: "polygon",
       fillColor: fill.color ?? style.color,
@@ -782,6 +805,7 @@ function getDynamicLayerLegendSpec(layer) {
       lineColor: line.color ?? style.color,
       lineOpacity,
       lineWidth: line.width ?? style.lineWidth,
+      drawOrder,
     };
   }
 
@@ -867,18 +891,21 @@ function persistDynamicLayers() {
 
 function getDynamicGeometryChannels(layer) {
   const geometryTypes = Array.isArray(layer?.geometryTypes) ? layer.geometryTypes : [];
-  const channels = [];
+  const all = {};
   if (geometryTypes.includes("polygon")) {
-    channels.push({ id: "fill", label: "Fill", sample: "polygon" });
-    channels.push({ id: "line", label: "Line", sample: "line" });
+    all.fill = { id: "fill", label: "Fill", sample: "polygon" };
+    all.line = { id: "line", label: "Line", sample: "line" };
   } else if (geometryTypes.includes("line")) {
-    channels.push({ id: "line", label: "Line", sample: "line" });
+    all.line = { id: "line", label: "Line", sample: "line" };
   }
   if (geometryTypes.includes("point")) {
-    channels.push({ id: "point", label: "Point", sample: "point" });
-    channels.push({ id: "pointLine", label: "Line", sample: "line" });
+    all.point = { id: "point", label: "Point", sample: "point" };
+    all.pointLine = { id: "pointLine", label: "Line", sample: "line" };
   }
-  return channels;
+  const order = Array.isArray(layer?.channelOrder) && layer.channelOrder.length
+    ? layer.channelOrder
+    : Object.keys(all);
+  return order.map((id) => all[id]).filter(Boolean);
 }
 
 function createLegendSvg(spec) {
@@ -1260,7 +1287,7 @@ function renderDynamicChannelRow(layer, channelDef) {
   const activePanel = state.activeDynamicStylePanels.get(layer.id);
   const channel = getDynamicChannel(layer, channelDef.id) ?? {};
   return `
-    <article class="earthlab-row earthlab-row-child" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-row="${escapeHtml(channelDef.id)}">
+    <article class="earthlab-row earthlab-row-child" data-reorder-scope="dynamic:${escapeHtml(layer.id)}" data-reorder-id="${escapeHtml(channelDef.id)}" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-row="${escapeHtml(channelDef.id)}">
       <span class="earthlab-row-swatch" data-dynamic-layer-id="${escapeHtml(layer.id)}" data-dynamic-channel-swatch="${escapeHtml(channelDef.id)}" aria-hidden="true"></span>
       <button class="earthlab-row-toggle" type="button" role="checkbox" aria-checked="${channel.visible !== false}" data-dynamic-channel-toggle="${escapeHtml(channelDef.id)}">
         ${escapeHtml(channelDef.label)}
@@ -1463,6 +1490,7 @@ function applyAppearanceStyles() {
   const settingsLineFill = `rgba(${settingsLineRgb.r}, ${settingsLineRgb.g}, ${settingsLineRgb.b}, ${(Number(settings?.lineOpacity) || 0) / 100})`;
   document.body.style.backgroundColor = screenFill;
   controls.app.style.backgroundColor = screenFill;
+  document.documentElement.style.setProperty("--screen-bg", screenFill);
   if (state.map?.getLayer("background")) {
     state.map.setPaintProperty("background", "background-color", screenFill);
     state.map.setPaintProperty("background", "background-opacity", 1);
@@ -1686,6 +1714,7 @@ function getDynamicDeckLayerSignature(entry, dataRecord) {
     loadedAt: dataRecord?.loadedAt ?? 0,
     visible: entry?.visible !== false,
     channels: entry?.channels ?? {},
+    channelOrder: entry?.channelOrder ?? [],
   });
 }
 
@@ -1707,7 +1736,6 @@ function getCachedDynamicDeckLayers(entry, clippedLayerProps) {
 }
 
 function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
-  const layers = [];
   const polygonData = dataRecord.geometry?.polygon ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "polygon");
   const lineData = dataRecord.geometry?.line ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "line");
   const pointData = dataRecord.geometry?.point ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "point");
@@ -1716,8 +1744,10 @@ function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
   const point = getDynamicChannel(entry, "point");
   const pointLine = getDynamicChannel(entry, "pointLine");
 
+  const deckLayerMap = {};
+
   if (polygonData.features.length && fill?.visible !== false) {
-    layers.push(new GeoJsonLayer({
+    deckLayerMap.fill = new GeoJsonLayer({
       id: `earthlab-dynamic-${entry.id}-fill`,
       ...clippedLayerProps,
       data: polygonData,
@@ -1726,17 +1756,14 @@ function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
       getFillColor: toDeckColor(fill.color, percentToAlpha(fill.opacity)),
       pickable: true,
       parameters: { depthTest: false },
-    }));
+    });
   }
 
   if ((polygonData.features.length || lineData.features.length) && line?.visible !== false) {
-    layers.push(new GeoJsonLayer({
+    deckLayerMap.line = new GeoJsonLayer({
       id: `earthlab-dynamic-${entry.id}-line`,
       ...clippedLayerProps,
-      data: {
-        type: "FeatureCollection",
-        features: [...polygonData.features, ...lineData.features],
-      },
+      data: { type: "FeatureCollection", features: [...polygonData.features, ...lineData.features] },
       filled: false,
       stroked: true,
       getLineColor: toDeckColor(line.color, percentToAlpha(line.opacity)),
@@ -1747,11 +1774,11 @@ function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
       capRounded: true,
       pickable: true,
       parameters: { depthTest: false },
-    }));
+    });
   }
 
   if (pointData.features.length && point?.visible !== false) {
-    layers.push(new GeoJsonLayer({
+    deckLayerMap.point = new GeoJsonLayer({
       id: `earthlab-dynamic-${entry.id}-point`,
       ...clippedLayerProps,
       data: pointData,
@@ -1768,9 +1795,16 @@ function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
       pointRadiusMinPixels: Number(point.radius) || 1,
       pickable: true,
       parameters: { depthTest: false },
-    }));
+    });
   }
 
+  const channelOrder = Array.isArray(entry.channelOrder) && entry.channelOrder.length
+    ? entry.channelOrder
+    : ["fill", "line", "point"];
+  const layers = [];
+  [...channelOrder].reverse().forEach((id) => {
+    if (deckLayerMap[id]) layers.push(deckLayerMap[id]);
+  });
   return layers;
 }
 
@@ -1840,6 +1874,9 @@ function collapseMenuSections() {
   state.activeAppearancePanels.settings = false;
   state.dynamicExpandedLayerIds.clear();
   state.activeDynamicStylePanels.clear();
+}
+
+function closeAddLayerPanel() {
   state.addLayerPanelOpen = false;
 }
 
@@ -1940,8 +1977,10 @@ async function addExistingLayerToMap(layerId) {
   if (existing) {
     existing.visible = true;
     persistDynamicLayers();
-    state.addLayerPanelOpen = false;
+    closeAddLayerPanel();
     syncAddLayerPanel();
+    state.panelCollapsed = false;
+    syncPanelCollapsed();
     await ensureDynamicLayerLoaded(existing.id);
     updateOverlay();
     return;
@@ -1970,7 +2009,10 @@ async function addExistingLayerToMap(layerId) {
     setDynamicLayerData(layerId, loaded.geojson);
     state.dynamicLayerErrors.delete(layerId);
     state.layerState.dynamicLayers = normalizeDynamicLayers([...getDynamicLayers(), nextLayer]);
-    state.addLayerPanelOpen = false;
+    closeAddLayerPanel();
+    syncAddLayerPanel();
+    state.panelCollapsed = false;
+    syncPanelCollapsed();
     persistLayerState();
     updateOverlay();
   } catch (error) {
@@ -2067,10 +2109,7 @@ function toggleStyleRow(rowId) {
 }
 
 function getReorderContainer(scope) {
-  if (scope === "land") return controls.landChildren;
-  if (scope === "earth") return controls.earthChildren;
-  if (scope === "dynamic") return controls.dynamicRows;
-  return controls.rows;
+  return document.querySelector(`[data-reorder-scope="${scope}"]`)?.parentElement ?? null;
 }
 
 function getAdjacentReorderRow(rowElement, direction) {
@@ -2111,17 +2150,25 @@ function moveDraggedRow(drag, direction) {
   if (direction === "up") drag.startY -= adjacentHeight;
   else drag.startY += adjacentHeight;
 
+  let orderKey;
   if (drag.scope === "dynamic") {
     rebuildDynamicLayerOrderFromDom();
+    orderKey = getDynamicLayers().map((layer) => layer.id).join("|");
+  } else if (drag.scope.startsWith("dynamic:")) {
+    const layerId = drag.scope.slice("dynamic:".length);
+    rebuildChannelOrderFromDom(layerId);
+    updateDynamicLayerPresentation(layerId);
+    orderKey = getDynamicLayers().find((l) => l.id === layerId)?.channelOrder?.join("|") ?? "";
   } else {
     rebuildRenderOrderFromDom();
+    orderKey = state.layerState.order.join("|");
   }
-  const orderKey = drag.scope === "dynamic"
-    ? getDynamicLayers().map((layer) => layer.id).join("|")
-    : state.layerState.order.join("|");
   if (orderKey !== drag.lastOrderKey) {
     drag.lastOrderKey = orderKey;
     if (drag.scope === "dynamic") {
+      persistDynamicLayers();
+      updateOverlayLayersOnly();
+    } else if (drag.scope.startsWith("dynamic:")) {
       updateOverlayLayersOnly();
     } else {
       persistLayerState();
@@ -2151,6 +2198,12 @@ function bindRowReordering() {
       state.dynamicExpandedLayerIds.delete(layerId);
       state.activeDynamicStylePanels.delete(layerId);
       drag.rowElement.querySelector(":scope > .earthlab-row-children")?.setAttribute("hidden", "");
+    } else if (drag.scope.startsWith("dynamic:")) {
+      const layerId = drag.rowElement.dataset.dynamicLayerId;
+      const channelId = drag.rowElement.dataset.reorderId;
+      if (state.activeDynamicStylePanels.get(layerId) === channelId) {
+        state.activeDynamicStylePanels.delete(layerId);
+      }
     } else if (rowId === "ocean" || rowId === "graticules") {
       state.expandedRows[rowId] = false;
       syncControlsFromState();
@@ -2165,7 +2218,7 @@ function bindRowReordering() {
       state.activeChildPanelByRow.land = null;
       syncControlsFromState();
     }
-    if (drag.scope === "land") controls.landChildren.hidden = false;
+    getReorderContainer(drag.scope)?.removeAttribute("hidden");
     drag.rowElement.classList.add("earthlab-row-dragging");
     const rect = drag.rowElement.getBoundingClientRect();
     drag.anchorTop = rect.top;
@@ -2237,17 +2290,9 @@ function bindRowReordering() {
     }
   }
 
-  controls.rows.querySelectorAll(".earthlab-row").forEach((rowElement) => {
-    rowElement.addEventListener("pointerdown", (event) => {
-      startPendingDrag(rowElement, event);
-    });
-  });
-
-  controls.dynamicRows.addEventListener("pointerdown", (event) => {
-    const rowElement = getElementTarget(event)?.closest(".earthlab-row");
-    if (!rowElement || rowElement.parentElement !== controls.dynamicRows) {
-      return;
-    }
+  controls.layerStack.addEventListener("pointerdown", (event) => {
+    const rowElement = getElementTarget(event)?.closest(".earthlab-row[data-reorder-scope]");
+    if (!rowElement) return;
     startPendingDrag(rowElement, event);
   });
 
@@ -2325,8 +2370,11 @@ function bindRowReordering() {
       drag.rowElement.classList.remove("earthlab-row-dragging");
       syncRowOrderFromState();
       if (drag.scope === "dynamic") {
+        persistDynamicLayers();
         persistLayerState();
         syncControlsFromState();
+      } else if (drag.scope.startsWith("dynamic:")) {
+        persistDynamicLayers();
       }
       suppressRowClickUntil = Date.now() + 180;
     }
@@ -2344,8 +2392,11 @@ function bindRowReordering() {
       drag.rowElement.classList.remove("earthlab-row-dragging");
       syncRowOrderFromState();
       if (drag.scope === "dynamic") {
+        persistDynamicLayers();
         persistLayerState();
         syncControlsFromState();
+      } else if (drag.scope.startsWith("dynamic:")) {
+        persistDynamicLayers();
       }
     }
 
@@ -2561,6 +2612,8 @@ function bindControls() {
     state.addLayerPanelOpen = !state.addLayerPanelOpen;
     if (state.addLayerPanelOpen) {
       state.addLayerActionError = "";
+      state.panelCollapsed = true;
+      syncPanelCollapsed();
       void ensureExistingLayersLoaded();
     }
     syncAddLayerPanel();
@@ -2682,6 +2735,21 @@ function bindControls() {
     updateDynamicLayerPresentation(layer.id, target.dataset.dynamicChannelId);
     updateOverlayLayersOnly();
   });
+
+  document.addEventListener("pointerdown", (event) => {
+    const target = getElementTarget(event);
+    if (!target) return;
+    const sharePopupEl = document.getElementById("sharePopup");
+    const shareBtnEl = document.getElementById("shareBtn");
+    const shareWrapEl = shareBtnEl?.closest(".earthlab-share-wrap");
+    if (sharePopupEl && !sharePopupEl.hidden && !sharePopupEl.contains(target) && !shareWrapEl?.contains(target)) {
+      sharePopupEl.hidden = true;
+    }
+    if (state.addLayerPanelOpen && !controls.addLayerPanel.contains(target) && !controls.addLayerBtn.contains(target)) {
+      closeAddLayerPanel();
+      syncAddLayerPanel();
+    }
+  }, true);
 
   document.addEventListener("pointerdown", (event) => {
     const target = getElementTarget(event);
@@ -2887,24 +2955,23 @@ function bindShareControls() {
     return;
   }
 
-  let feedbackTimer = null;
+  const sharePopup = document.getElementById("sharePopup");
+  const sharePopupUrl = document.getElementById("sharePopupUrl");
 
   shareBtn.addEventListener("click", async () => {
+    sharePopupUrl.textContent = "";
+    sharePopup.hidden = false;
     shareBtn.disabled = true;
     try {
-      await copyShareUrl();
-      shareBtn.textContent = "Copied";
+      const url = await copyShareUrl();
+      sharePopupUrl.textContent = url;
     } catch (error) {
       console.warn("[earthlab] Failed to build share URL.", error);
-      shareBtn.textContent = "Error";
     } finally {
       shareBtn.disabled = false;
-      window.clearTimeout(feedbackTimer);
-      feedbackTimer = window.setTimeout(() => {
-        shareBtn.textContent = "Share";
-      }, 1200);
     }
   });
+
 }
 
 function bindMapName() {
@@ -2921,6 +2988,9 @@ function bindMapName() {
   wrapper.className = "earthlab-kicker-wrap";
   label.insertAdjacentElement("beforebegin", wrapper);
   wrapper.append(label);
+  wrapper.addEventListener("pointerdown", (e) => {
+    if (e.target === wrapper) label.focus();
+  });
 
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";

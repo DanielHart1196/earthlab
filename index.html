@@ -48,7 +48,7 @@
       }
 
       .earthlab-layer-stack,
-      .earthlab-share,
+      .earthlab-share-wrap,
       .earthlab-reload {
         opacity: 0;
         visibility: hidden;
@@ -60,7 +60,7 @@
 
       body[data-earthlab-ui="ready"] .earthlab-panel-header,
       body[data-earthlab-stage="ready"] .earthlab-layer-stack,
-      body[data-earthlab-stage="ready"] .earthlab-share,
+      body[data-earthlab-stage="ready"] .earthlab-share-wrap,
       body[data-earthlab-stage="ready"] .earthlab-reload {
         opacity: 1;
         visibility: visible;
@@ -292,26 +292,34 @@
 
           <div class="earthlab-rows" id="dynamicRows" hidden></div>
 
-          <button class="earthlab-add-layer" id="addLayerBtn" type="button" aria-controls="addLayerPanel" aria-expanded="false">
+          <button class="earthlab-add-layer" id="addLayerBtn" type="button" aria-expanded="false">
             + Add layer
           </button>
-
-          <section class="earthlab-add-panel" id="addLayerPanel" aria-label="Add layer options" hidden>
-            <div class="earthlab-add-panel-body">
-              <label class="earthlab-existing-search">
-                <span class="earthlab-visually-hidden">Search existing layers</span>
-                <input id="addLayerSearchInput" type="search" placeholder="Search layers" autocomplete="off" spellcheck="false" />
-              </label>
-              <div class="earthlab-existing-placeholder" id="addLayerExistingList">
-                <span class="earthlab-existing-placeholder-title">Existing layers</span>
-                <span class="earthlab-existing-placeholder-copy">Supabase catalog loading will be wired in the next pass.</span>
-              </div>
-              <button class="earthlab-add-new-layer" id="addNewLayerBtn" type="button" aria-label="Create new layer">+</button>
-            </div>
-          </section>
         </div>
       </section>
-      <button class="earthlab-share" id="shareBtn" type="button" title="Copy share URL" aria-label="Copy share URL">Share</button>
+
+      <section class="earthlab-add-panel" id="addLayerPanel" aria-label="Add layer options" hidden>
+        <div class="earthlab-add-panel-body">
+          <label class="earthlab-existing-search">
+            <span class="earthlab-visually-hidden">Search existing layers</span>
+            <input id="addLayerSearchInput" type="search" placeholder="Search layers" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="earthlab-existing-placeholder" id="addLayerExistingList">
+            <span class="earthlab-existing-placeholder-title">Existing layers</span>
+            <span class="earthlab-existing-placeholder-copy">Supabase catalog loading will be wired in the next pass.</span>
+          </div>
+          <button class="earthlab-add-new-layer" id="addNewLayerBtn" type="button" aria-label="Create new layer">+</button>
+        </div>
+      </section>
+      <div class="earthlab-share-wrap">
+        <span class="earthlab-share-print">Print |</span>
+        <button class="earthlab-share" id="shareBtn" type="button" title="Copy share URL" aria-label="Copy share URL">Share</button>
+      </div>
+      <div class="earthlab-share-popup" id="sharePopup" hidden>
+        <p class="earthlab-share-popup-title">Map URL copied</p>
+        <p class="earthlab-share-popup-url" id="sharePopupUrl"></p>
+        <p class="earthlab-share-popup-hint">Send this to a friend and they'll see your map (layers, styling, position and zoom)</p>
+      </div>
       <button class="earthlab-reload" id="reloadBtn" type="button" title="Reload" aria-label="Reload page"></button>
       <menu class="earthlab-reload-menu" id="reloadMenu" hidden>
         <li><button type="button" id="hardReloadBtn">Hard reload</button></li>
