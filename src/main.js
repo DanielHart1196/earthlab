@@ -2913,23 +2913,49 @@ async function bootstrap() {
 }
 
 function bindReloadControls() {
-  const reloadBtn = document.getElementById("reloadBtn");
+  const panelCloseBtn = document.getElementById("panelCloseBtn");
   const reloadMenu = document.getElementById("reloadMenu");
+  const reloadBtn = document.getElementById("reloadBtn");
   const hardReloadBtn = document.getElementById("hardReloadBtn");
+  const clearCacheBtn = document.getElementById("clearCacheBtn");
   const clearReloadBtn = document.getElementById("clearReloadBtn");
 
-  reloadBtn.addEventListener("click", () => {
-    window.location.reload();
+  let holdTimer = null;
+
+  panelCloseBtn.addEventListener("pointerdown", () => {
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      reloadMenu.hidden = false;
+    }, 300);
   });
 
-  reloadBtn.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    reloadMenu.hidden = !reloadMenu.hidden;
+  panelCloseBtn.addEventListener("pointerup", () => {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+  });
+
+  panelCloseBtn.addEventListener("pointercancel", () => {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+  });
+
+  reloadBtn.addEventListener("click", () => {
+    reloadMenu.hidden = true;
+    window.location.reload();
   });
 
   hardReloadBtn.addEventListener("click", () => {
     reloadMenu.hidden = true;
     window.location.reload(true);
+  });
+
+  clearCacheBtn.addEventListener("click", async () => {
+    reloadMenu.hidden = true;
+    localStorage.clear();
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
   });
 
   clearReloadBtn.addEventListener("click", async () => {
@@ -2943,7 +2969,7 @@ function bindReloadControls() {
   });
 
   document.addEventListener("pointerdown", (event) => {
-    if (!reloadBtn.contains(event.target) && !reloadMenu.contains(event.target)) {
+    if (!panelCloseBtn.contains(event.target) && !reloadMenu.contains(event.target)) {
       reloadMenu.hidden = true;
     }
   });
@@ -2989,7 +3015,10 @@ function bindMapName() {
   label.insertAdjacentElement("beforebegin", wrapper);
   wrapper.append(label);
   wrapper.addEventListener("pointerdown", (e) => {
-    if (e.target === wrapper) label.focus();
+    if (e.target === wrapper) {
+      e.preventDefault();
+      label.focus();
+    }
   });
 
   const clearBtn = document.createElement("button");

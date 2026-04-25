@@ -48,8 +48,7 @@
       }
 
       .earthlab-layer-stack,
-      .earthlab-share-wrap,
-      .earthlab-reload {
+      .earthlab-share-wrap {
         opacity: 0;
         visibility: hidden;
         transition:
@@ -60,8 +59,7 @@
 
       body[data-earthlab-ui="ready"] .earthlab-panel-header,
       body[data-earthlab-stage="ready"] .earthlab-layer-stack,
-      body[data-earthlab-stage="ready"] .earthlab-share-wrap,
-      body[data-earthlab-stage="ready"] .earthlab-reload {
+      body[data-earthlab-stage="ready"] .earthlab-share-wrap {
         opacity: 1;
         visibility: visible;
         transform: translateY(0);
@@ -86,6 +84,12 @@
               <button class="earthlab-panel-action" id="earthLayersBtn" type="button" aria-label="Collapse earth layers"></button>
               <button class="earthlab-panel-action" id="appearanceBtn" type="button" aria-label="Toggle appearance controls"></button>
               <button class="earthlab-panel-action" id="panelCloseBtn" type="button" aria-label="Close panel">×</button>
+              <menu class="earthlab-reload-menu" id="reloadMenu" hidden>
+                <li><button type="button" id="reloadBtn">Reload</button></li>
+                <li><button type="button" id="hardReloadBtn">Hard reload</button></li>
+                <li><button type="button" id="clearCacheBtn">Clear cache</button></li>
+                <li><button type="button" id="clearReloadBtn">Clear cache &amp; reload</button></li>
+              </menu>
             </div>
           </div>
         </div>
@@ -320,11 +324,6 @@
         <p class="earthlab-share-popup-url" id="sharePopupUrl"></p>
         <p class="earthlab-share-popup-hint">Send this to a friend and they'll see your map (layers, styling, position and zoom)</p>
       </div>
-      <button class="earthlab-reload" id="reloadBtn" type="button" title="Reload" aria-label="Reload page"></button>
-      <menu class="earthlab-reload-menu" id="reloadMenu" hidden>
-        <li><button type="button" id="hardReloadBtn">Hard reload</button></li>
-        <li><button type="button" id="clearReloadBtn">Clear cache &amp; reload</button></li>
-      </menu>
     </main>
     <script type="module" src="./src/main.js"></script>
   </body>
