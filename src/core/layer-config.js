@@ -1,14 +1,14 @@
 const STORAGE_VERSION = 3;
 const DEFAULT_APPEARANCE = {
   screen: {
-    color: "#ffffff",
-    opacity: 85,
+    color: "#f9f9ef",
+    opacity: 100,
   },
   settings: {
-    color: "#000000",
-    opacity: 30,
+    color: "#f9f9ef",
+    opacity: 100,
     lineColor: "#000000",
-    lineOpacity: 100,
+    lineOpacity: 30,
   },
 };
 

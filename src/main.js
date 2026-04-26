@@ -3246,6 +3246,7 @@ function bindControls() {
       state.appearanceGroupExpanded = false;
       state.activeAppearancePanels.background = false;
       state.activeAppearancePanels.settings = false;
+      controls.layerStack.scrollTop = 0;
     }
     syncEarthLayers();
     syncControlsFromState();
@@ -3262,6 +3263,7 @@ function bindControls() {
       state.expandedRows.graticules = false;
       state.expandedRows.land = false;
       state.activeChildPanelByRow.land = null;
+      controls.layerStack.scrollTop = 0;
     } else {
       state.appearanceGroupExpanded = false;
       state.activeAppearancePanels.background = false;
