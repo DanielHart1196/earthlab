@@ -164,6 +164,48 @@ function normalizeGeometryTypes(geometryTypes = [], geometryType = "mixed") {
   return ["point", "line", "polygon"].filter((family) => normalized.includes(family));
 }
 
+function normalizeLayerFilter(entry, geometryTypes = []) {
+  if (!entry || typeof entry !== "object" || !entry.id || !entry.field) return null;
+  const color = normalizeHexColor(entry.color, "#e74c3c");
+  const opacity = normalizeNumeric(entry.opacity, 80);
+  const style = { color, opacity, lineWidth: 2, pointRadius: 8 };
+  const channels = normalizeDynamicChannels(entry.channels ?? {}, geometryTypes, style);
+
+  const defaultChannelOrder = [];
+  if (geometryTypes.includes("polygon")) defaultChannelOrder.push("fill", "line");
+  else if (geometryTypes.includes("line")) defaultChannelOrder.push("line");
+  if (geometryTypes.includes("point")) defaultChannelOrder.push("point", "pointLine");
+
+  const savedOrder = Array.isArray(entry.channelOrder)
+    ? entry.channelOrder.filter((id) => defaultChannelOrder.includes(id))
+    : [];
+  const channelOrder = savedOrder.length === defaultChannelOrder.length ? savedOrder : defaultChannelOrder;
+
+  return {
+    id: String(entry.id),
+    field: String(entry.field),
+    value: entry.value ?? null,
+    visible: entry.visible !== false,
+    color,
+    opacity,
+    channels,
+    channelOrder,
+  };
+}
+
+function normalizeLayerFilters(filters, geometryTypes = []) {
+  if (!Array.isArray(filters)) return [];
+  const seen = new Set();
+  return filters
+    .map((f) => normalizeLayerFilter(f, geometryTypes))
+    .filter(Boolean)
+    .filter((f) => {
+      if (seen.has(f.id)) return false;
+      seen.add(f.id);
+      return true;
+    });
+}
+
 function normalizeDynamicLayer(entry) {
   if (!entry || typeof entry !== "object" || !entry.id) {
     return null;
@@ -198,6 +240,7 @@ function normalizeDynamicLayer(entry) {
     },
     channels,
     channelOrder,
+    filters: normalizeLayerFilters(entry.filters ?? [], geometryTypes),
   };
 }
 
@@ -388,6 +431,7 @@ export {
   getChannelTarget,
   getLayerVisibility,
   normalizeLayerState,
+  normalizeLayerFilters,
   normalizeRenderOrder,
   normalizeDynamicLayers,
 };

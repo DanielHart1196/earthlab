@@ -48,6 +48,36 @@ async function loadLayerDatasets(layerId) {
   return Array.isArray(data) ? data : [];
 }
 
+async function getLayerFieldValues(layerId, field) {
+  const supabase = requireSupabase();
+  const datasets = await loadLayerDatasets(layerId);
+  const datasetIds = datasets.map((d) => d.id);
+  if (!datasetIds.length) return null;
+
+  const { data, error } = await supabase
+    .from("features")
+    .select("properties")
+    .in("dataset_id", datasetIds)
+    .limit(200);
+
+  if (error || !data?.length) return null;
+
+  const seen = new Set();
+  for (const row of data) {
+    const value = row.properties?.[field];
+    if (value !== undefined && value !== null && value !== "") {
+      seen.add(value);
+    }
+  }
+
+  if (!seen.size) return null;
+
+  return [...seen].sort((a, b) => {
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    return String(a).localeCompare(String(b));
+  });
+}
+
 async function loadGeojsonArtifact(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -105,4 +135,4 @@ async function loadLayerFromSupabase(layerId) {
   };
 }
 
-export { getSupabaseCatalog, loadLayerFromSupabase, normalizeGeometryTypes };
+export { getSupabaseCatalog, getLayerFieldValues, loadLayerDatasets, loadLayerFromSupabase, normalizeGeometryTypes };

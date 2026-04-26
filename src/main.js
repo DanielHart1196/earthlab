@@ -11,7 +11,7 @@ import {
   normalizeRenderOrder,
 } from "./core/layer-config.js";
 import { createPaletteStore, normalizeHexColor } from "./core/palette-store.js";
-import { getSupabaseCatalog, loadLayerFromSupabase } from "./sources/supabase/layer-loader.js";
+import { getSupabaseCatalog, getLayerFieldValues, loadLayerDatasets, loadLayerFromSupabase } from "./sources/supabase/layer-loader.js";
 import { createMapShare, loadMapShare } from "./sources/supabase/map-share-loader.js";
 import { mountColorControl } from "./ui/color-control.js";
 import "./styles.css";
@@ -73,6 +73,17 @@ const state = {
   earthLayersExpanded: false,
   earthExpanded: false,
   addLayerPanelOpen: false,
+  activeFilterLayerId: null,
+  filterDatasets: [],
+  filterDatasetsLoaded: false,
+  filterDatasetsLoading: false,
+  filterSelectedDatasetId: null,
+  filterSelectedColumn: null,
+  filterColumnValues: null,
+  filterColumnValuesLoading: false,
+  filterSelectedValue: null,
+  expandedFilterIds: new Set(),
+  activeFilterChannelPanels: new Map(),
   addLayerSearch: "",
   existingLayers: [],
   existingLayersLoaded: false,
@@ -233,6 +244,17 @@ const controls = {
   addLayerSearchInput: document.getElementById("addLayerSearchInput"),
   addNewLayerBtn: document.getElementById("addNewLayerBtn"),
 };
+
+function ensureReorderHandles(root = controls.layerStack) {
+  if (!root) return;
+  root.querySelectorAll("[data-reorder-scope] > .earthlab-row-slot").forEach((slot) => {
+    if (slot.querySelector(".earthlab-row-drag-handle")) return;
+    const handle = document.createElement("span");
+    handle.className = "earthlab-row-drag-handle";
+    handle.setAttribute("aria-hidden", "true");
+    slot.append(handle);
+  });
+}
 
 function readLayerState() {
   try {
@@ -562,12 +584,17 @@ function syncRowOrderFromState() {
     if (rowElement) {
       controls.dynamicRows.append(rowElement);
     }
-    if (!Array.isArray(layer.channelOrder)) return;
     const childrenContainer = controls.dynamicRows.querySelector(`[data-dynamic-layer-children="${layer.id}"]`);
     if (!childrenContainer) return;
-    layer.channelOrder.forEach((channelId) => {
-      const channelRow = childrenContainer.querySelector(`:scope > [data-reorder-id="${channelId}"]`);
-      if (channelRow) childrenContainer.append(channelRow);
+    if (Array.isArray(layer.channelOrder)) {
+      layer.channelOrder.forEach((channelId) => {
+        const channelRow = childrenContainer.querySelector(`:scope > [data-reorder-scope="dynamic:${layer.id}"][data-reorder-id="${channelId}"]`);
+        if (channelRow) childrenContainer.append(channelRow);
+      });
+    }
+    (layer.filters ?? []).forEach((filter) => {
+      const filterRow = childrenContainer.querySelector(`:scope > [data-reorder-scope="filter:${layer.id}"][data-reorder-id="${filter.id}"]`);
+      if (filterRow) childrenContainer.append(filterRow);
     });
   });
 }
@@ -632,6 +659,18 @@ function rebuildChannelOrderFromDom(layerId) {
     nextOrder.push(row.dataset.reorderId);
   });
   if (nextOrder.length) layer.channelOrder = nextOrder;
+}
+
+function rebuildFilterOrderFromDom(layerId) {
+  const layer = getDynamicLayers().find((l) => l.id === layerId);
+  if (!layer) return;
+  const byId = new Map((layer.filters ?? []).map((f) => [f.id, f]));
+  const nextFilters = [];
+  document.querySelectorAll(`[data-reorder-scope="filter:${layerId}"]`).forEach((row) => {
+    const filter = byId.get(row.dataset.reorderId);
+    if (filter) nextFilters.push(filter);
+  });
+  if (nextFilters.length) layer.filters = nextFilters;
 }
 
 function rebuildDynamicLayerOrderFromDom() {
@@ -1254,19 +1293,24 @@ function renderDynamicLayerRows() {
   controls.dynamicRows.innerHTML = dynamicLayers.map((layer) => {
     const expanded = state.dynamicExpandedLayerIds.has(layer.id);
     const channels = getDynamicGeometryChannels(layer);
+    const filters = layer.filters ?? [];
     return `
     <article class="earthlab-row earthlab-row-parent" data-row-id="dynamic:${escapeHtml(layer.id)}" data-reorder-scope="dynamic" data-reorder-id="${escapeHtml(layer.id)}" data-dynamic-layer-id="${escapeHtml(layer.id)}">
       <span class="earthlab-row-swatch" data-dynamic-layer-swatch="${escapeHtml(layer.id)}" aria-hidden="true"></span>
       <button class="earthlab-row-toggle" type="button" role="checkbox" aria-checked="${layer.visible !== false}" data-dynamic-layer-toggle="${escapeHtml(layer.id)}">
         ${escapeHtml(layer.label ?? "Untitled layer")}
       </button>
-      <span class="earthlab-row-slot" aria-hidden="true"></span>
+      <span class="earthlab-row-slot">
+        <button class="earthlab-row-filter-btn" type="button" aria-label="Filter ${escapeHtml(layer.label ?? "layer")}" data-filter-layer-id="${escapeHtml(layer.id)}">⊟</button>
+      </span>
       <div class="earthlab-row-children" data-dynamic-layer-children="${escapeHtml(layer.id)}" ${expanded ? "" : "hidden"}>
         ${channels.map((channel) => renderDynamicChannelRow(layer, channel)).join("")}
+        ${filters.map((filter) => renderFilterRow(layer, filter)).join("")}
       </div>
     </article>
     `;
   }).join("");
+  ensureReorderHandles(controls.dynamicRows);
 
   dynamicLayers.forEach((layer) => {
     const swatch = Array.from(controls.dynamicRows.querySelectorAll("[data-dynamic-layer-swatch]"))
@@ -1278,9 +1322,19 @@ function renderDynamicLayerRows() {
         .find((element) => element.dataset.dynamicLayerId === layer.id && element.dataset.dynamicChannelSwatch === channel.id);
       renderLegendButton(channelSwatch, getDynamicChannelLegendSpec(layer, channel.id));
     });
+
+    (layer.filters ?? []).forEach((filter) => {
+      const filterSwatch = controls.dynamicRows.querySelector(`[data-filter-swatch="${filter.id}"]`);
+      renderLegendButton(filterSwatch, getFilterLegendSpec(layer, filter));
+      getFilterChannels(filter, layer).forEach((ch) => {
+        const chSwatch = controls.dynamicRows.querySelector(`[data-filter-channel-swatch="${ch.id}"][data-filter-id="${filter.id}"]`);
+        renderLegendButton(chSwatch, getFilterChannelLegendSpec(filter, ch.id));
+      });
+    });
   });
 
   mountDynamicColorControls();
+  mountFilterChannelColorControls();
 }
 
 function renderDynamicChannelRow(layer, channelDef) {
@@ -1715,6 +1769,9 @@ function getDynamicDeckLayerSignature(entry, dataRecord) {
     visible: entry?.visible !== false,
     channels: entry?.channels ?? {},
     channelOrder: entry?.channelOrder ?? [],
+    filters: (entry?.filters ?? []).map((f) => ({
+      id: f.id, visible: f.visible, channels: f.channels ?? {}, channelOrder: f.channelOrder ?? [], field: f.field, value: f.value,
+    })),
   });
 }
 
@@ -1735,68 +1792,117 @@ function getCachedDynamicDeckLayers(entry, clippedLayerProps) {
   return layers;
 }
 
+function buildDeckFillLayer(id, data, fill, clippedLayerProps) {
+  if (!data.features.length || fill?.visible === false) return null;
+  return new GeoJsonLayer({
+    id,
+    ...clippedLayerProps,
+    data,
+    filled: true,
+    stroked: false,
+    getFillColor: toDeckColor(fill.color, percentToAlpha(fill.opacity)),
+    pickable: true,
+    parameters: { depthTest: false },
+  });
+}
+
+function buildDeckLineLayer(id, data, line, clippedLayerProps) {
+  if (!data.features.length || line?.visible === false) return null;
+  return new GeoJsonLayer({
+    id,
+    ...clippedLayerProps,
+    data,
+    filled: false,
+    stroked: true,
+    getLineColor: toDeckColor(line.color, percentToAlpha(line.opacity)),
+    getLineWidth: Number(line.width) || 0,
+    lineWidthUnits: "pixels",
+    lineWidthMinPixels: Number(line.width) || 0,
+    jointRounded: true,
+    capRounded: true,
+    pickable: true,
+    parameters: { depthTest: false },
+  });
+}
+
+function buildDeckPointLayer(id, data, point, pointLine, clippedLayerProps) {
+  if (!data.features.length || point?.visible === false) return null;
+  const strokeWidth = pointLine?.visible === false ? 0 : Number(pointLine?.width ?? 1) || 0;
+  const strokeColor = toDeckColor(
+    pointLine?.color ?? "#000000",
+    percentToAlpha(pointLine?.visible === false ? 0 : pointLine?.opacity ?? 100),
+  );
+  return new GeoJsonLayer({
+    id,
+    ...clippedLayerProps,
+    data,
+    filled: true,
+    stroked: true,
+    pointType: "circle",
+    getFillColor: toDeckColor(point.color, percentToAlpha(point.opacity)),
+    getLineColor: strokeColor,
+    getLineWidth: strokeWidth,
+    lineWidthUnits: "pixels",
+    lineWidthMinPixels: strokeWidth,
+    getPointRadius: Number(point.radius) || 1,
+    pointRadiusUnits: "pixels",
+    pointRadiusMinPixels: Number(point.radius) || 1,
+    pickable: true,
+    parameters: { depthTest: false },
+  });
+}
+
 function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
-  const polygonData = dataRecord.geometry?.polygon ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "polygon");
-  const lineData = dataRecord.geometry?.line ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "line");
-  const pointData = dataRecord.geometry?.point ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "point");
-  const fill = getDynamicChannel(entry, "fill");
-  const line = getDynamicChannel(entry, "line");
-  const point = getDynamicChannel(entry, "point");
-  const pointLine = getDynamicChannel(entry, "pointLine");
-
-  const deckLayerMap = {};
-
-  if (polygonData.features.length && fill?.visible !== false) {
-    deckLayerMap.fill = new GeoJsonLayer({
-      id: `earthlab-dynamic-${entry.id}-fill`,
-      ...clippedLayerProps,
-      data: polygonData,
-      filled: true,
-      stroked: false,
-      getFillColor: toDeckColor(fill.color, percentToAlpha(fill.opacity)),
-      pickable: true,
-      parameters: { depthTest: false },
-    });
+  const activeFilters = (entry.filters ?? []).filter((f) => f.visible !== false && f.field && f.value != null);
+  const excludedFeatures = new Set();
+  if (activeFilters.length) {
+    for (const feature of (dataRecord.geojson?.features ?? [])) {
+      const props = feature?.properties;
+      if (!props) continue;
+      for (const filter of activeFilters) {
+        if (String(props[filter.field]) === String(filter.value)) {
+          excludedFeatures.add(feature);
+          break;
+        }
+      }
+    }
   }
 
-  if ((polygonData.features.length || lineData.features.length) && line?.visible !== false) {
-    deckLayerMap.line = new GeoJsonLayer({
-      id: `earthlab-dynamic-${entry.id}-line`,
-      ...clippedLayerProps,
-      data: { type: "FeatureCollection", features: [...polygonData.features, ...lineData.features] },
-      filled: false,
-      stroked: true,
-      getLineColor: toDeckColor(line.color, percentToAlpha(line.opacity)),
-      getLineWidth: Number(line.width) || 0,
-      lineWidthUnits: "pixels",
-      lineWidthMinPixels: Number(line.width) || 0,
-      jointRounded: true,
-      capRounded: true,
-      pickable: true,
-      parameters: { depthTest: false },
-    });
-  }
+  const basePolygon = dataRecord.geometry?.polygon ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "polygon");
+  const baseLine = dataRecord.geometry?.line ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "line");
+  const basePoint = dataRecord.geometry?.point ?? filterGeojsonByGeometryFamily(dataRecord.geojson, "point");
 
-  if (pointData.features.length && point?.visible !== false) {
-    deckLayerMap.point = new GeoJsonLayer({
-      id: `earthlab-dynamic-${entry.id}-point`,
-      ...clippedLayerProps,
-      data: pointData,
-      filled: true,
-      stroked: true,
-      pointType: "circle",
-      getFillColor: toDeckColor(point.color, percentToAlpha(point.opacity)),
-      getLineColor: toDeckColor(pointLine?.color ?? "#000000", percentToAlpha(pointLine?.visible === false ? 0 : pointLine?.opacity ?? 100)),
-      getLineWidth: pointLine?.visible === false ? 0 : Number(pointLine?.width ?? 1) || 0,
-      lineWidthUnits: "pixels",
-      lineWidthMinPixels: pointLine?.visible === false ? 0 : Number(pointLine?.width ?? 1) || 0,
-      getPointRadius: Number(point.radius) || 1,
-      pointRadiusUnits: "pixels",
-      pointRadiusMinPixels: Number(point.radius) || 1,
-      pickable: true,
-      parameters: { depthTest: false },
-    });
-  }
+  const polygonData = excludedFeatures.size
+    ? { type: "FeatureCollection", features: basePolygon.features.filter((f) => !excludedFeatures.has(f)) }
+    : basePolygon;
+  const lineData = excludedFeatures.size
+    ? { type: "FeatureCollection", features: baseLine.features.filter((f) => !excludedFeatures.has(f)) }
+    : baseLine;
+  const pointData = excludedFeatures.size
+    ? { type: "FeatureCollection", features: basePoint.features.filter((f) => !excludedFeatures.has(f)) }
+    : basePoint;
+
+  const deckLayerMap = {
+    fill: buildDeckFillLayer(
+      `earthlab-dynamic-${entry.id}-fill`,
+      polygonData,
+      getDynamicChannel(entry, "fill"),
+      clippedLayerProps,
+    ),
+    line: buildDeckLineLayer(
+      `earthlab-dynamic-${entry.id}-line`,
+      { type: "FeatureCollection", features: [...polygonData.features, ...lineData.features] },
+      getDynamicChannel(entry, "line"),
+      clippedLayerProps,
+    ),
+    point: buildDeckPointLayer(
+      `earthlab-dynamic-${entry.id}-point`,
+      pointData,
+      getDynamicChannel(entry, "point"),
+      getDynamicChannel(entry, "pointLine"),
+      clippedLayerProps,
+    ),
+  };
 
   const channelOrder = Array.isArray(entry.channelOrder) && entry.channelOrder.length
     ? entry.channelOrder
@@ -1805,6 +1911,39 @@ function createDynamicDeckLayers(entry, dataRecord, clippedLayerProps) {
   [...channelOrder].reverse().forEach((id) => {
     if (deckLayerMap[id]) layers.push(deckLayerMap[id]);
   });
+
+  const allFeatures = dataRecord.geojson?.features ?? [];
+  for (const filter of [...(entry.filters ?? [])].reverse()) {
+    if (filter.visible === false) continue;
+    const matchingFeatures = allFeatures.filter((f) => {
+      const props = f?.properties;
+      return props != null && String(props[filter.field]) === String(filter.value);
+    });
+    if (!matchingFeatures.length) continue;
+
+    const fPolygon = { type: "FeatureCollection", features: matchingFeatures.filter((f) => getFeatureGeometryFamily(f) === "polygon") };
+    const fLine = { type: "FeatureCollection", features: matchingFeatures.filter((f) => getFeatureGeometryFamily(f) === "line") };
+    const fPoint = { type: "FeatureCollection", features: matchingFeatures.filter((f) => getFeatureGeometryFamily(f) === "point") };
+    const prefix = `earthlab-dynamic-${entry.id}-filter-${filter.id}`;
+
+    const filterDeckMap = {
+      fill: buildDeckFillLayer(`${prefix}-fill`, fPolygon, filter.channels?.fill, clippedLayerProps),
+      line: buildDeckLineLayer(
+        `${prefix}-line`,
+        { type: "FeatureCollection", features: [...fPolygon.features, ...fLine.features] },
+        filter.channels?.line,
+        clippedLayerProps,
+      ),
+      point: buildDeckPointLayer(`${prefix}-point`, fPoint, filter.channels?.point, filter.channels?.pointLine, clippedLayerProps),
+    };
+
+    const fOrder = Array.isArray(filter.channelOrder) && filter.channelOrder.length
+      ? filter.channelOrder : ["fill", "line", "point"];
+    [...fOrder].reverse().forEach((id) => {
+      if (filterDeckMap[id]) layers.push(filterDeckMap[id]);
+    });
+  }
+
   return layers;
 }
 
@@ -1861,6 +2000,466 @@ function syncAddLayerPanel() {
   renderExistingLayerList();
 }
 
+function getFilterPanelFields() {
+  if (!state.filterDatasets.length) return [];
+  const seen = new Set();
+  const fields = [];
+  for (const dataset of state.filterDatasets) {
+    const schema = dataset?.field_schema;
+    if (!Array.isArray(schema)) continue;
+    for (const f of schema) {
+      const name = f.name ?? f.key ?? "";
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      fields.push({ name, label: f.label ?? name, type: f.type ?? "text" });
+    }
+  }
+  return fields;
+}
+
+function renderFilterPanelContent(panel) {
+  const layerId = state.activeFilterLayerId;
+  const layer = state.layerState.dynamicLayers.find((l) => l.id === layerId);
+
+  let inner = `<h2 class="earthlab-filter-panel-title">Filter${layer ? `: ${escapeHtml(layer.label)}` : ""}</h2>`;
+
+  if (state.filterDatasetsLoading) {
+    inner += `<p class="earthlab-filter-loading">Loading…</p>`;
+    panel.innerHTML = inner;
+    return;
+  }
+
+  const fields = getFilterPanelFields();
+  const selectedColumn = state.filterSelectedColumn ?? "";
+  inner += `<div class="earthlab-filter-row">
+    <label class="earthlab-filter-label" for="filterColumnSelect">Column</label>
+    <select class="earthlab-filter-select" id="filterColumnSelect"${!fields.length ? " disabled" : ""}>
+      <option value="">— select column —</option>
+      ${fields.map((f) => `<option value="${escapeHtml(f.name)}"${selectedColumn === f.name ? " selected" : ""}>${escapeHtml(f.label)}</option>`).join("")}
+    </select>
+  </div>`;
+
+  if (selectedColumn) {
+    if (state.filterColumnValuesLoading) {
+      inner += `<p class="earthlab-filter-loading">Loading values…</p>`;
+    } else if (state.filterColumnValues !== null) {
+      const values = state.filterColumnValues;
+      if (!values.length) {
+        inner += `<p class="earthlab-filter-loading">No values found.</p>`;
+      } else {
+        const selectedVal = state.filterSelectedValue ?? "";
+        inner += `<div class="earthlab-filter-row">
+          <label class="earthlab-filter-label" for="filterValueSelect">Value</label>
+          <select class="earthlab-filter-select" id="filterValueSelect">
+            <option value="">— select value —</option>
+            ${values.map((v) => `<option value="${escapeHtml(String(v))}"${String(v) === String(selectedVal) && selectedVal !== "" ? " selected" : ""}>${escapeHtml(String(v))}</option>`).join("")}
+          </select>
+        </div>`;
+        if (state.filterSelectedValue !== null && state.filterSelectedValue !== "") {
+          inner += `<button class="earthlab-filter-add-btn" type="button" id="filterAddBtn">Add filter</button>`;
+        }
+      }
+    }
+  }
+
+  panel.innerHTML = inner;
+
+  const columnSelect = panel.querySelector("#filterColumnSelect");
+  if (columnSelect) {
+    columnSelect.addEventListener("change", () => {
+      const field = columnSelect.value;
+      state.filterSelectedColumn = field || null;
+      state.filterColumnValues = null;
+      state.filterSelectedValue = null;
+      if (field) {
+        void loadFilterColumnValues(layerId, field);
+      } else {
+        state.filterColumnValuesLoading = false;
+        renderFilterPanelContent(panel);
+      }
+    });
+  }
+
+  const valueSelect = panel.querySelector("#filterValueSelect");
+  if (valueSelect) {
+    valueSelect.addEventListener("change", () => {
+      state.filterSelectedValue = valueSelect.value || null;
+      renderFilterPanelContent(panel);
+    });
+  }
+
+  const addBtn = panel.querySelector("#filterAddBtn");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => {
+      if (state.filterSelectedColumn && state.filterSelectedValue) {
+        addFilterToLayer(layerId, state.filterSelectedColumn, state.filterSelectedValue);
+        state.activeFilterLayerId = null;
+        syncFilterPanel();
+      }
+    });
+  }
+}
+
+async function loadFilterColumnValues(layerId, field) {
+  state.filterColumnValuesLoading = true;
+  state.filterColumnValues = null;
+  const panel = document.getElementById("filterPanel");
+  if (panel) renderFilterPanelContent(panel);
+
+  try {
+    const values = await getLayerFieldValues(layerId, field);
+    if (state.activeFilterLayerId !== layerId || state.filterSelectedColumn !== field) return;
+    state.filterColumnValues = values ?? [];
+  } catch (_err) {
+    if (state.activeFilterLayerId !== layerId || state.filterSelectedColumn !== field) return;
+    state.filterColumnValues = [];
+  } finally {
+    if (state.activeFilterLayerId === layerId && state.filterSelectedColumn === field) {
+      state.filterColumnValuesLoading = false;
+      const p = document.getElementById("filterPanel");
+      if (p) renderFilterPanelContent(p);
+    }
+  }
+}
+
+async function loadFilterDatasets(layerId) {
+  state.filterDatasets = [];
+  state.filterDatasetsLoaded = false;
+  state.filterDatasetsLoading = true;
+  state.filterSelectedDatasetId = null;
+  state.filterSelectedColumn = null;
+  state.filterColumnValues = null;
+  state.filterColumnValuesLoading = false;
+  state.filterSelectedValue = null;
+
+  const panel = document.getElementById("filterPanel");
+  if (panel) renderFilterPanelContent(panel);
+
+  try {
+    const datasets = await loadLayerDatasets(layerId);
+    if (state.activeFilterLayerId !== layerId) return;
+    state.filterDatasets = datasets;
+    state.filterDatasetsLoaded = true;
+    state.filterSelectedDatasetId = datasets.length > 0 ? datasets[0].id : null;
+  } catch (_err) {
+    if (state.activeFilterLayerId !== layerId) return;
+    state.filterDatasets = [];
+    state.filterDatasetsLoaded = true;
+  } finally {
+    if (state.activeFilterLayerId === layerId) {
+      state.filterDatasetsLoading = false;
+      const p = document.getElementById("filterPanel");
+      if (p) renderFilterPanelContent(p);
+    }
+  }
+}
+
+const FILTER_COLORS = ["#e74c3c", "#f39c12", "#2ecc71", "#3498db", "#9b59b6", "#1abc9c"];
+
+function showDeleteConfirmPanel(drag) {
+  const isFilter = drag.scope.startsWith("filter:");
+  const layerId = isFilter ? drag.scope.slice("filter:".length) : drag.rowElement.dataset.dynamicLayerId;
+  const filterId = isFilter ? drag.rowElement.dataset.reorderId : null;
+
+  let label = "this layer";
+  if (isFilter) {
+    const layer = getDynamicLayers().find((l) => l.id === layerId);
+    const filter = layer?.filters?.find((f) => f.id === filterId);
+    if (filter) label = `"${filter.field}: ${filter.value}"`;
+  } else {
+    const layer = getDynamicLayers().find((l) => l.id === layerId);
+    if (layer) label = `"${layer.label}"`;
+  }
+
+  const panel = document.createElement("div");
+  panel.className = "earthlab-delete-confirm-panel";
+  panel.innerHTML = `
+    <span class="earthlab-delete-confirm-label">Delete ${escapeHtml(label)}?</span>
+    <div class="earthlab-delete-confirm-actions">
+      <button class="earthlab-delete-confirm-cancel" type="button">Cancel</button>
+      <button class="earthlab-delete-confirm-ok" type="button">Delete</button>
+    </div>
+  `;
+
+  const btn = controls.addLayerBtn;
+  btn.insertAdjacentElement("beforebegin", panel);
+  btn.hidden = true;
+
+  function dismiss() {
+    panel.remove();
+    btn.hidden = false;
+  }
+
+  panel.querySelector(".earthlab-delete-confirm-cancel").addEventListener("click", dismiss);
+  panel.querySelector(".earthlab-delete-confirm-ok").addEventListener("click", () => {
+    dismiss();
+    if (isFilter) {
+      const layer = getDynamicLayers().find((l) => l.id === layerId);
+      if (layer) {
+        layer.filters = (layer.filters ?? []).filter((f) => f.id !== filterId);
+        state.expandedFilterIds.delete(filterId);
+        state.activeFilterChannelPanels.delete(filterId);
+        invalidateDynamicDeckLayerCache(layerId);
+        persistDynamicLayers();
+        syncControlsFromState();
+        updateOverlayLayersOnly();
+      }
+    } else {
+      state.layerState.dynamicLayers = state.layerState.dynamicLayers.filter((l) => l.id !== layerId);
+      state.dynamicExpandedLayerIds.delete(layerId);
+      state.activeDynamicStylePanels.delete(layerId);
+      state.dynamicLayerData.delete(layerId);
+      invalidateDynamicDeckLayerCache(layerId);
+      persistDynamicLayers();
+      persistLayerState();
+      syncControlsFromState();
+      updateOverlayLayersOnly();
+    }
+  });
+}
+
+function addFilterToLayer(layerId, field, value) {
+  const layer = getDynamicLayers().find((l) => l.id === layerId);
+  if (!layer) return;
+  const usedColors = new Set((layer.filters ?? []).map((f) => f.color));
+  const nextColor = FILTER_COLORS.find((c) => !usedColors.has(c)) ?? FILTER_COLORS[0];
+  const filter = {
+    id: `filter-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    field,
+    value,
+    visible: true,
+    color: nextColor,
+    opacity: 80,
+  };
+  layer.filters = [...(layer.filters ?? []), filter];
+  persistDynamicLayers();
+  invalidateDynamicDeckLayerCache(layerId);
+  syncEarthLayers();
+  updateOverlayLayersOnly();
+}
+
+function getFilterChannels(filter, layer) {
+  const geometryTypes = Array.isArray(layer?.geometryTypes) ? layer.geometryTypes : [];
+  const all = {};
+  if (geometryTypes.includes("polygon")) {
+    all.fill = { id: "fill", label: "Fill" };
+    all.line = { id: "line", label: "Line" };
+  } else if (geometryTypes.includes("line")) {
+    all.line = { id: "line", label: "Line" };
+  }
+  if (geometryTypes.includes("point")) {
+    all.point = { id: "point", label: "Point" };
+    all.pointLine = { id: "pointLine", label: "Stroke" };
+  }
+  const order = Array.isArray(filter?.channelOrder) && filter.channelOrder.length
+    ? filter.channelOrder : Object.keys(all);
+  return order.map((id) => all[id]).filter(Boolean);
+}
+
+function getFilterLegendSpec(layer, filter) {
+  const geometryTypes = Array.isArray(layer?.geometryTypes) ? layer.geometryTypes : [];
+  const primaryType = geometryTypes.includes("polygon") ? "polygon"
+    : geometryTypes.includes("line") ? "line"
+    : geometryTypes.includes("point") ? "point"
+    : null;
+  if (!primaryType) return null;
+  const visible = filter.visible !== false;
+  if (primaryType === "polygon") {
+    const fill = filter.channels?.fill ?? {};
+    const line = filter.channels?.line ?? {};
+    const drawOrder = Array.isArray(filter.channelOrder) && filter.channelOrder.length
+      ? [...filter.channelOrder].reverse().filter((id) => id === "fill" || id === "line")
+      : ["line", "fill"];
+    return {
+      kind: "polygon",
+      fillColor: fill.color ?? filter.color,
+      fillOpacity: visible && fill.visible !== false ? (fill.opacity ?? 80) : 0,
+      lineColor: line.color ?? filter.color,
+      lineOpacity: visible && line.visible !== false ? (line.opacity ?? 80) : 0,
+      lineWidth: line.width ?? 2,
+      drawOrder,
+    };
+  }
+  if (primaryType === "line") {
+    const line = filter.channels?.line ?? {};
+    return { kind: "line", color: line.color ?? filter.color, opacity: visible && line.visible !== false ? (line.opacity ?? 80) : 0, width: line.width ?? 2 };
+  }
+  const point = filter.channels?.point ?? {};
+  const pointLine = filter.channels?.pointLine ?? {};
+  return {
+    kind: "point",
+    fillColor: point.color ?? filter.color,
+    fillOpacity: visible && point.visible !== false ? (point.opacity ?? 80) : 0,
+    lineColor: pointLine.color ?? "#000000",
+    lineOpacity: visible && pointLine.visible !== false ? (pointLine.opacity ?? 100) : 0,
+    lineWidth: pointLine.width ?? 1,
+    radius: point.radius ?? 8,
+  };
+}
+
+function getFilterChannelLegendSpec(filter, channelId) {
+  const channel = filter?.channels?.[channelId] ?? {};
+  const visible = filter?.visible !== false && channel.visible !== false;
+  const opacity = visible ? (channel.opacity ?? 80) : 0;
+  const color = channel.color ?? filter.color ?? "#e74c3c";
+  if (channelId === "point") {
+    return { kind: "point", fillColor: color, fillOpacity: opacity, lineColor: "#000000", lineOpacity: 0, lineWidth: 0, radius: 8 };
+  }
+  if (channelId === "line" || channelId === "pointLine") {
+    return { kind: "line", color, opacity, width: channel.width ?? 2 };
+  }
+  return { kind: "polygon", fillColor: color, fillOpacity: opacity, lineColor: "none", lineOpacity: 0, lineWidth: 0, drawOrder: ["fill"] };
+}
+
+function renderFilterChannelControls(layer, filter, channelId) {
+  const channel = filter?.channels?.[channelId] ?? {};
+  const color = channel.color ?? filter.color ?? "#e74c3c";
+  const opacity = Math.round(Number(channel.opacity ?? 80));
+  const width = Number(channel.width ?? 2).toFixed(1);
+  const radius = Number(channel.radius ?? 8).toFixed(1);
+  const colorControl = `
+    <div class="earthlab-style-control">
+      <div class="earthlab-style-control-header">
+        <div class="earthlab-row-style-label">Color</div>
+        <div class="earthlab-row-style-value" data-filter-channel-value="${escapeHtml(channelId)}:color" data-filter-id="${escapeHtml(filter.id)}">${escapeHtml(color)}</div>
+      </div>
+      <div data-filter-channel-color-control="${escapeHtml(channelId)}" data-filter-id="${escapeHtml(filter.id)}" data-filter-owner-layer-id="${escapeHtml(layer.id)}"></div>
+    </div>`;
+  const opacityControl = `
+    <div class="earthlab-style-control">
+      <div class="earthlab-style-control-header">
+        <div class="earthlab-row-style-label">Opacity</div>
+        <div class="earthlab-row-style-value" data-filter-channel-value="${escapeHtml(channelId)}:opacity" data-filter-id="${escapeHtml(filter.id)}">${opacity}%</div>
+      </div>
+      <input class="earthlab-range" type="range" min="0" max="100" step="1" value="${opacity}"
+        data-filter-channel-slider="opacity"
+        data-filter-channel-id="${escapeHtml(channelId)}"
+        data-filter-id="${escapeHtml(filter.id)}"
+        data-filter-owner-layer-id="${escapeHtml(layer.id)}" />
+    </div>`;
+  if (channelId === "line" || channelId === "pointLine") {
+    return `
+      <div class="earthlab-style-control">
+        <div class="earthlab-style-control-header">
+          <div class="earthlab-row-style-label">Width</div>
+          <div class="earthlab-row-style-value" data-filter-channel-value="${escapeHtml(channelId)}:width" data-filter-id="${escapeHtml(filter.id)}">${width} px</div>
+        </div>
+        <input class="earthlab-range" type="range" min="0" max="10" step="0.1" value="${width}"
+          data-filter-channel-slider="width"
+          data-filter-channel-id="${escapeHtml(channelId)}"
+          data-filter-id="${escapeHtml(filter.id)}"
+          data-filter-owner-layer-id="${escapeHtml(layer.id)}" />
+      </div>${colorControl}${opacityControl}`;
+  }
+  if (channelId === "point") {
+    return `
+      <div class="earthlab-style-control">
+        <div class="earthlab-style-control-header">
+          <div class="earthlab-row-style-label">Radius</div>
+          <div class="earthlab-row-style-value" data-filter-channel-value="${escapeHtml(channelId)}:radius" data-filter-id="${escapeHtml(filter.id)}">${radius} px</div>
+        </div>
+        <input class="earthlab-range" type="range" min="1" max="20" step="0.5" value="${radius}"
+          data-filter-channel-slider="radius"
+          data-filter-channel-id="${escapeHtml(channelId)}"
+          data-filter-id="${escapeHtml(filter.id)}"
+          data-filter-owner-layer-id="${escapeHtml(layer.id)}" />
+      </div>${colorControl}${opacityControl}`;
+  }
+  return `${colorControl}${opacityControl}`;
+}
+
+function renderFilterChannelRow(layer, filter, channelDef) {
+  const activeChannel = state.activeFilterChannelPanels.get(filter.id);
+  const channel = filter?.channels?.[channelDef.id] ?? {};
+  return `
+    <article class="earthlab-row earthlab-row-child"
+      data-filter-channel-row="${escapeHtml(channelDef.id)}"
+      data-filter-id="${escapeHtml(filter.id)}"
+      data-filter-owner-layer-id="${escapeHtml(layer.id)}">
+      <span class="earthlab-row-swatch"
+        data-filter-channel-swatch="${escapeHtml(channelDef.id)}"
+        data-filter-id="${escapeHtml(filter.id)}"
+        aria-hidden="true"></span>
+      <button class="earthlab-row-toggle" type="button" role="checkbox"
+        aria-checked="${channel.visible !== false}"
+        data-filter-channel-toggle="${escapeHtml(channelDef.id)}"
+        data-filter-id="${escapeHtml(filter.id)}"
+        data-filter-owner-layer-id="${escapeHtml(layer.id)}">
+        ${escapeHtml(channelDef.label)}
+      </button>
+      <span class="earthlab-row-slot" aria-hidden="true"></span>
+      <div class="earthlab-row-style" ${activeChannel === channelDef.id ? "" : "hidden"}>
+        ${renderFilterChannelControls(layer, filter, channelDef.id)}
+      </div>
+    </article>`;
+}
+
+function renderFilterRow(layer, filter) {
+  const expanded = state.expandedFilterIds.has(filter.id);
+  const channels = getFilterChannels(filter, layer);
+  const label = `${filter.field} = ${filter.value}`;
+  return `
+    <article class="earthlab-row earthlab-row-child"
+      data-filter-row="${escapeHtml(filter.id)}"
+      data-filter-owner-layer-id="${escapeHtml(layer.id)}"
+      data-reorder-scope="filter:${escapeHtml(layer.id)}"
+      data-reorder-id="${escapeHtml(filter.id)}">
+      <span class="earthlab-row-swatch" data-filter-swatch="${escapeHtml(filter.id)}" aria-hidden="true"></span>
+      <button class="earthlab-row-toggle" type="button" role="checkbox"
+        aria-checked="${filter.visible !== false}"
+        data-filter-toggle="${escapeHtml(filter.id)}"
+        data-filter-owner-layer-id="${escapeHtml(layer.id)}">
+        ${escapeHtml(label)}
+      </button>
+      <span class="earthlab-row-slot" aria-hidden="true"></span>
+      <div class="earthlab-row-children" data-filter-children="${escapeHtml(filter.id)}" ${expanded ? "" : "hidden"}>
+        ${channels.map((ch) => renderFilterChannelRow(layer, filter, ch)).join("")}
+      </div>
+    </article>`;
+}
+
+function mountFilterChannelColorControls() {
+  controls.dynamicRows.querySelectorAll("[data-filter-channel-color-control]").forEach((mount) => {
+    const channelId = mount.dataset.filterChannelColorControl;
+    const filterId = mount.dataset.filterId;
+    const ownerId = mount.dataset.filterOwnerLayerId;
+    const ownerLayer = getDynamicLayers().find((l) => l.id === ownerId);
+    const filter = ownerLayer?.filters?.find((f) => f.id === filterId);
+    const channel = filter?.channels?.[channelId];
+    if (!channel) return;
+    mountColorControl({
+      mount,
+      initialValue: channel.color,
+      paletteStore,
+      onChange(nextColor) {
+        const currentLayer = getDynamicLayers().find((l) => l.id === ownerId);
+        const currentFilter = currentLayer?.filters?.find((f) => f.id === filterId);
+        const currentChannel = currentFilter?.channels?.[channelId];
+        if (!currentChannel) return;
+        currentChannel.color = nextColor;
+        persistDynamicLayers();
+        invalidateDynamicDeckLayerCache(ownerId);
+        const chSwatch = controls.dynamicRows.querySelector(`[data-filter-channel-swatch="${channelId}"][data-filter-id="${filterId}"]`);
+        renderLegendButton(chSwatch, getFilterChannelLegendSpec(currentFilter, channelId));
+        const parentSwatch = controls.dynamicRows.querySelector(`[data-filter-swatch="${filterId}"]`);
+        renderLegendButton(parentSwatch, getFilterLegendSpec(currentLayer, currentFilter));
+        const colorLabel = controls.dynamicRows.querySelector(`[data-filter-channel-value="${channelId}:color"][data-filter-id="${filterId}"]`);
+        if (colorLabel) colorLabel.textContent = nextColor;
+        updateOverlayLayersOnly();
+      },
+    });
+  });
+}
+
+function syncFilterPanel() {
+  const panel = document.getElementById("filterPanel");
+  if (!panel) return;
+  panel.hidden = state.activeFilterLayerId === null;
+  if (state.activeFilterLayerId !== null) {
+    renderFilterPanelContent(panel);
+  }
+}
+
 function collapseMenuSections() {
   state.earthLayersExpanded = false;
   state.earthExpanded = false;
@@ -1874,6 +2473,8 @@ function collapseMenuSections() {
   state.activeAppearancePanels.settings = false;
   state.dynamicExpandedLayerIds.clear();
   state.activeDynamicStylePanels.clear();
+  state.expandedFilterIds.clear();
+  state.activeFilterChannelPanels.clear();
 }
 
 function closeAddLayerPanel() {
@@ -2147,6 +2748,7 @@ function moveDraggedRow(drag, direction) {
 
   if (!positionChanged) return null;
 
+  dbg(`SWAP ${direction} h=${Math.round(adjacentHeight)}`);
   if (direction === "up") drag.startY -= adjacentHeight;
   else drag.startY += adjacentHeight;
 
@@ -2159,6 +2761,11 @@ function moveDraggedRow(drag, direction) {
     rebuildChannelOrderFromDom(layerId);
     updateDynamicLayerPresentation(layerId);
     orderKey = getDynamicLayers().find((l) => l.id === layerId)?.channelOrder?.join("|") ?? "";
+  } else if (drag.scope.startsWith("filter:")) {
+    const layerId = drag.scope.slice("filter:".length);
+    rebuildFilterOrderFromDom(layerId);
+    invalidateDynamicDeckLayerCache(layerId);
+    orderKey = (getDynamicLayers().find((l) => l.id === layerId)?.filters ?? []).map((f) => f.id).join("|");
   } else {
     rebuildRenderOrderFromDom();
     orderKey = state.layerState.order.join("|");
@@ -2170,6 +2777,8 @@ function moveDraggedRow(drag, direction) {
       updateOverlayLayersOnly();
     } else if (drag.scope.startsWith("dynamic:")) {
       updateOverlayLayersOnly();
+    } else if (drag.scope.startsWith("filter:")) {
+      updateOverlayLayersOnly();
     } else {
       persistLayerState();
       updateOverlay();
@@ -2179,9 +2788,15 @@ function moveDraggedRow(drag, direction) {
   return { adjacentHeight };
 }
 
+function dbg(msg) {
+  void msg;
+}
+
 function bindRowReordering() {
   let suppressRowClickUntil = 0;
   let holdTimer = null;
+
+  ensureReorderHandles();
 
   function cancelHold() {
     if (holdTimer !== null) {
@@ -2204,6 +2819,11 @@ function bindRowReordering() {
       if (state.activeDynamicStylePanels.get(layerId) === channelId) {
         state.activeDynamicStylePanels.delete(layerId);
       }
+    } else if (drag.scope.startsWith("filter:")) {
+      const filterId = drag.rowElement.dataset.reorderId;
+      state.expandedFilterIds.delete(filterId);
+      state.activeFilterChannelPanels.delete(filterId);
+      drag.rowElement.querySelector(":scope > .earthlab-row-children")?.setAttribute("hidden", "");
     } else if (rowId === "ocean" || rowId === "graticules") {
       state.expandedRows[rowId] = false;
       syncControlsFromState();
@@ -2220,11 +2840,19 @@ function bindRowReordering() {
     }
     getReorderContainer(drag.scope)?.removeAttribute("hidden");
     drag.rowElement.classList.add("earthlab-row-dragging");
+    drag.rowElement.style.touchAction = "none";
+    controls.layerStack.style.overflowY = "hidden";
+    dbg(`ACTIVATE scope=${drag.scope}`);
     const rect = drag.rowElement.getBoundingClientRect();
     drag.anchorTop = rect.top;
     drag.anchorBottom = rect.bottom;
     drag.provisional = null;
     navigator.vibrate?.(10);
+    if (state.addLayerPanelOpen) {
+      state.addLayerPanelOpen = false;
+      syncControlsFromState();
+    }
+    controls.addLayerBtn.classList.add("earthlab-drop-delete-zone");
   }
 
   document.addEventListener("click", (event) => {
@@ -2239,8 +2867,10 @@ function bindRowReordering() {
 
     const target = getElementTarget(event);
     if (!target) return;
+    const dragHandle = target.closest(".earthlab-row-drag-handle");
     if (!rowElement.dataset.reorderScope) return;
     if (rowElement.dataset.rowId === "earth") return;
+    if (!dragHandle || dragHandle.closest(".earthlab-row") !== rowElement) return;
     if (target.closest(".earthlab-row") !== rowElement) return;
     if (
       target.closest(".earthlab-row-style") ||
@@ -2308,8 +2938,6 @@ function bindRowReordering() {
 
     if (!drag.dragging) return;
 
-    drag.rowElement.style.transform = "";
-
     if (drag.provisional) {
       if (drag.provisional.direction === "down") {
         if (event.clientY <= drag.provisional.boundary) {
@@ -2358,23 +2986,47 @@ function bindRowReordering() {
     }
 
     drag.rowElement.style.transform = `translateY(${event.clientY - drag.startY}px)`;
+
+    const btnRect = controls.addLayerBtn.getBoundingClientRect();
+    const overDelete = event.clientX >= btnRect.left && event.clientX <= btnRect.right &&
+      event.clientY >= btnRect.top && event.clientY <= btnRect.bottom;
+    const wasOverDelete = drag.overDelete ?? false;
+    drag.overDelete = overDelete;
+    if (overDelete && !wasOverDelete) {
+      navigator.vibrate?.(20);
+    }
+    controls.addLayerBtn.classList.toggle("earthlab-drop-delete-hover", overDelete);
+    drag.rowElement.classList.toggle("earthlab-row-dragging-delete", overDelete);
   });
 
   document.addEventListener("pointerup", (event) => {
+    dbg(`UP id=${event.pointerId} dragging=${state.drag?.dragging}`);
     cancelHold();
     const drag = state.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     if (drag.dragging) {
       drag.rowElement.style.transform = "";
-      drag.rowElement.classList.remove("earthlab-row-dragging");
-      syncRowOrderFromState();
-      if (drag.scope === "dynamic") {
-        persistDynamicLayers();
-        persistLayerState();
-        syncControlsFromState();
-      } else if (drag.scope.startsWith("dynamic:")) {
-        persistDynamicLayers();
+      drag.rowElement.style.touchAction = "";
+      controls.layerStack.style.overflowY = "";
+      drag.rowElement.classList.remove("earthlab-row-dragging", "earthlab-row-dragging-delete");
+      controls.addLayerBtn.classList.remove("earthlab-drop-delete-zone", "earthlab-drop-delete-hover");
+
+      const droppedOnDelete = drag.overDelete ?? false;
+
+      if (droppedOnDelete) {
+        showDeleteConfirmPanel(drag);
+      } else {
+        syncRowOrderFromState();
+        if (drag.scope === "dynamic") {
+          persistDynamicLayers();
+          persistLayerState();
+          syncControlsFromState();
+        } else if (drag.scope.startsWith("dynamic:")) {
+          persistDynamicLayers();
+        } else if (drag.scope.startsWith("filter:")) {
+          persistDynamicLayers();
+        }
       }
       suppressRowClickUntil = Date.now() + 180;
     }
@@ -2383,19 +3035,25 @@ function bindRowReordering() {
   });
 
   document.addEventListener("pointercancel", (event) => {
+    dbg(`CANCEL id=${event.pointerId} dragging=${state.drag?.dragging}`);
     cancelHold();
     const drag = state.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     if (drag.dragging) {
       drag.rowElement.style.transform = "";
-      drag.rowElement.classList.remove("earthlab-row-dragging");
+      drag.rowElement.style.touchAction = "";
+      controls.layerStack.style.overflowY = "";
+      drag.rowElement.classList.remove("earthlab-row-dragging", "earthlab-row-dragging-delete");
+      controls.addLayerBtn.classList.remove("earthlab-drop-delete-zone", "earthlab-drop-delete-hover");
       syncRowOrderFromState();
       if (drag.scope === "dynamic") {
         persistDynamicLayers();
         persistLayerState();
         syncControlsFromState();
       } else if (drag.scope.startsWith("dynamic:")) {
+        persistDynamicLayers();
+      } else if (drag.scope.startsWith("filter:")) {
         persistDynamicLayers();
       }
     }
@@ -2563,9 +3221,15 @@ function bindControls() {
 
   controls.panelCloseBtn.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (window._suppressPanelCloseBtnClick) {
+      window._suppressPanelCloseBtnClick = false;
+      return;
+    }
     state.panelCollapsed = !state.panelCollapsed;
     if (state.panelCollapsed) {
       collapseMenuSections();
+    } else {
+      document.getElementById("reloadMenu").hidden = true;
     }
     syncPanelCollapsed();
     syncEarthLayers();
@@ -2642,6 +3306,21 @@ function bindControls() {
       return;
     }
 
+    const filterBtn = target?.closest("[data-filter-layer-id]");
+    if (filterBtn) {
+      event.stopPropagation();
+      const layerId = filterBtn.dataset.filterLayerId;
+      const wasActive = state.activeFilterLayerId === layerId;
+      state.activeFilterLayerId = wasActive ? null : layerId;
+      if (state.activeFilterLayerId !== null) {
+        state.panelCollapsed = true;
+        syncPanelCollapsed();
+        void loadFilterDatasets(layerId);
+      }
+      syncFilterPanel();
+      return;
+    }
+
     const toggle = target?.closest("[data-dynamic-layer-toggle]");
     const layerId = toggle?.dataset?.dynamicLayerToggle;
     if (layerId) {
@@ -2656,6 +3335,91 @@ function bindControls() {
         void ensureDynamicLayerLoaded(layer.id);
       }
       updateOverlay();
+      return;
+    }
+
+    const filterToggle = target.closest("[data-filter-toggle]");
+    if (filterToggle) {
+      const filterId = filterToggle.dataset.filterToggle;
+      const ownerId = filterToggle.dataset.filterOwnerLayerId;
+      const ownerLayer = getDynamicLayers().find((l) => l.id === ownerId);
+      const filter = ownerLayer?.filters?.find((f) => f.id === filterId);
+      if (!filter) return;
+      event.stopPropagation();
+      filter.visible = filter.visible === false;
+      persistDynamicLayers();
+      invalidateDynamicDeckLayerCache(ownerId);
+      filterToggle.setAttribute("aria-checked", String(filter.visible !== false));
+      const filterSwatch = controls.dynamicRows.querySelector(`[data-filter-swatch="${filterId}"]`);
+      renderLegendButton(filterSwatch, getFilterLegendSpec(ownerLayer, filter));
+      updateOverlayLayersOnly();
+      return;
+    }
+
+    const filterRemove = target.closest("[data-filter-remove]");
+    if (filterRemove) {
+      const filterId = filterRemove.dataset.filterRemove;
+      const ownerId = filterRemove.dataset.filterOwnerLayerId;
+      const ownerLayer = getDynamicLayers().find((l) => l.id === ownerId);
+      if (!ownerLayer) return;
+      event.stopPropagation();
+      ownerLayer.filters = (ownerLayer.filters ?? []).filter((f) => f.id !== filterId);
+      state.expandedFilterIds.delete(filterId);
+      state.activeFilterChannelPanels.delete(filterId);
+      persistDynamicLayers();
+      invalidateDynamicDeckLayerCache(ownerId);
+      syncEarthLayers();
+      updateOverlayLayersOnly();
+      return;
+    }
+
+    const filterChannelToggle = target.closest("[data-filter-channel-toggle]");
+    if (filterChannelToggle) {
+      const channelId = filterChannelToggle.dataset.filterChannelToggle;
+      const filterId = filterChannelToggle.dataset.filterId;
+      const ownerId = filterChannelToggle.dataset.filterOwnerLayerId;
+      const ownerLayer = getDynamicLayers().find((l) => l.id === ownerId);
+      const filter = ownerLayer?.filters?.find((f) => f.id === filterId);
+      const channel = filter?.channels?.[channelId];
+      if (!channel) return;
+      event.stopPropagation();
+      channel.visible = channel.visible === false;
+      persistDynamicLayers();
+      invalidateDynamicDeckLayerCache(ownerId);
+      filterChannelToggle.setAttribute("aria-checked", String(channel.visible !== false));
+      const chSwatch = controls.dynamicRows.querySelector(`[data-filter-channel-swatch="${channelId}"][data-filter-id="${filterId}"]`);
+      renderLegendButton(chSwatch, getFilterChannelLegendSpec(filter, channelId));
+      const parentSwatch = controls.dynamicRows.querySelector(`[data-filter-swatch="${filterId}"]`);
+      renderLegendButton(parentSwatch, getFilterLegendSpec(ownerLayer, filter));
+      updateOverlayLayersOnly();
+      return;
+    }
+
+    const filterChannelRow = target.closest("[data-filter-channel-row]");
+    if (filterChannelRow && controls.dynamicRows.contains(filterChannelRow)) {
+      const channelId = filterChannelRow.dataset.filterChannelRow;
+      const filterId = filterChannelRow.dataset.filterId;
+      event.stopPropagation();
+      state.expandedFilterIds.add(filterId);
+      state.activeFilterChannelPanels.set(
+        filterId,
+        state.activeFilterChannelPanels.get(filterId) === channelId ? null : channelId,
+      );
+      syncControlsFromState();
+      return;
+    }
+
+    const filterRow = target.closest("[data-filter-row]");
+    if (filterRow && controls.dynamicRows.contains(filterRow)) {
+      const filterId = filterRow.dataset.filterRow;
+      event.stopPropagation();
+      if (state.expandedFilterIds.has(filterId)) {
+        state.expandedFilterIds.delete(filterId);
+        state.activeFilterChannelPanels.delete(filterId);
+      } else {
+        state.expandedFilterIds.add(filterId);
+      }
+      syncControlsFromState();
       return;
     }
 
@@ -2706,6 +3470,11 @@ function bindControls() {
         state.activeDynamicStylePanels.delete(parentLayerId);
       } else {
         state.dynamicExpandedLayerIds.add(parentLayerId);
+        const layer = getDynamicLayers().find((l) => l.id === parentLayerId);
+        const channelOrder = layer?.channelOrder ?? [];
+        if (channelOrder.length === 1) {
+          state.activeDynamicStylePanels.set(parentLayerId, channelOrder[0]);
+        }
       }
       event.stopPropagation();
       syncControlsFromState();
@@ -2714,6 +3483,35 @@ function bindControls() {
 
   controls.dynamicRows.addEventListener("input", (event) => {
     const target = getElementTarget(event);
+
+    if (target?.matches("[data-filter-channel-slider]")) {
+      const channelId = target.dataset.filterChannelId;
+      const filterId = target.dataset.filterId;
+      const ownerId = target.dataset.filterOwnerLayerId;
+      const ownerLayer = getDynamicLayers().find((l) => l.id === ownerId);
+      const filter = ownerLayer?.filters?.find((f) => f.id === filterId);
+      const channel = filter?.channels?.[channelId];
+      if (!channel) return;
+      const key = target.dataset.filterChannelSlider;
+      const value = Number(target.value);
+      if (key === "opacity") channel.opacity = clampOpacity(value);
+      else if (key === "width") channel.width = Math.max(0, value);
+      else if (key === "radius") channel.radius = Math.max(1, value);
+      persistDynamicLayers();
+      invalidateDynamicDeckLayerCache(ownerId);
+      const chSwatch = controls.dynamicRows.querySelector(`[data-filter-channel-swatch="${channelId}"][data-filter-id="${filterId}"]`);
+      renderLegendButton(chSwatch, getFilterChannelLegendSpec(filter, channelId));
+      const parentSwatch = controls.dynamicRows.querySelector(`[data-filter-swatch="${filterId}"]`);
+      renderLegendButton(parentSwatch, getFilterLegendSpec(ownerLayer, filter));
+      const valueLabel = controls.dynamicRows.querySelector(`[data-filter-channel-value="${channelId}:${key}"][data-filter-id="${filterId}"]`);
+      if (valueLabel) {
+        if (key === "opacity") valueLabel.textContent = `${Math.round(value)}%`;
+        else valueLabel.textContent = `${value.toFixed(1)} px`;
+      }
+      updateOverlayLayersOnly();
+      return;
+    }
+
     if (!target?.matches("[data-dynamic-slider]")) {
       return;
     }
@@ -2748,6 +3546,11 @@ function bindControls() {
     if (state.addLayerPanelOpen && !controls.addLayerPanel.contains(target) && !controls.addLayerBtn.contains(target)) {
       closeAddLayerPanel();
       syncAddLayerPanel();
+    }
+    const filterPanel = document.getElementById("filterPanel");
+    if (state.activeFilterLayerId !== null && filterPanel && !filterPanel.contains(target) && !target.closest("[data-filter-layer-id]")) {
+      state.activeFilterLayerId = null;
+      syncFilterPanel();
     }
   }, true);
 
@@ -2925,6 +3728,14 @@ function bindReloadControls() {
   panelCloseBtn.addEventListener("pointerdown", () => {
     holdTimer = setTimeout(() => {
       holdTimer = null;
+      window._suppressPanelCloseBtnClick = true;
+      if (!state.panelCollapsed) {
+        state.panelCollapsed = true;
+        collapseMenuSections();
+        syncPanelCollapsed();
+        syncEarthLayers();
+        syncControlsFromState();
+      }
       reloadMenu.hidden = false;
     }, 300);
   });

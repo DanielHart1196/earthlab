@@ -235,3 +235,56 @@ Future:
 ### Principle
 
 The shared URL should represent a published immutable snapshot, not a live mutable working session.
+
+## Supabase Schema
+
+Reference implementation: `/data/data/com.termux/files/home/layersv2/src/sources/supabase/layer-loader.js`
+
+### Key tables
+
+**`layers`**
+- `id` — UUID, primary key
+- `name` — display label
+- `geometry_type` — legacy single value (`point`, `line`, `area`, `mixed`)
+- `geometry_types` — array, preferred over `geometry_type`
+- `default_style` — JSONB: `{ color, opacity, lineWidth, pointRadius }`
+- `view_access` — `public` | `unlisted` | `private`
+
+**`datasets`**
+- `id` — UUID, primary key
+- `layer_id` — FK to `layers`
+- `name` — display label for this dataset
+- `geometry_type` / `geometry_types` — same pattern as layers
+- `field_schema` — JSONB array of field definitions: `[{ name, type, label, ... }]`
+- `render_format` — e.g. `geojson`, `pmtiles`
+- `artifact_url` — URL for derived render artifact (PMTiles etc.)
+- `feature_count`
+- `created_at`
+
+One layer may have many datasets. By default all datasets for a layer render together as one visual layer.
+
+**`features`**
+- `dataset_id` — FK to `datasets`
+- `geometry` — PostGIS geometry
+- `properties` — JSONB
+
+### Key functions (from v2 layer-loader.js)
+
+- `getSupabaseCatalog()` — fetches all public/unlisted layers (`id`, `name`, `geometry_type`, `geometry_types`)
+- `getLayerDatasets(layerId)` — fetches all datasets for a layer with full schema
+- `getLayerFields(layerId)` — merges `field_schema` across all datasets for a layer, returns `{ fields }`
+- `getLayerFieldValues(layerId, field)` — distinct sorted values for a field (sampled up to 200 features)
+- `getLayerTablePreview(layerId, { limit, offset, datasetId })` — paginated feature rows, optionally scoped to one dataset
+
+### Filter panel data model
+
+When building the filter panel for a dynamic layer:
+
+1. Call `getLayerDatasets(layerId)` to get all datasets
+2. If >1 dataset → show dataset dropdown (use `dataset.name` as label, `dataset.id` as value)
+3. Always show column dropdown — sourced from the selected dataset's `field_schema`, or merged fields if no dataset selected
+4. `field_schema` entries have at minimum `name` and `type`; use `label` if present, fall back to `name`
+
+### Field types (from field_schema)
+
+Common values for `type`: `text`, `number`, `integer`, `boolean`, `date`, `timestamp`. Use type to determine appropriate filter UI (range slider for numeric, toggle/select for text/boolean, date picker for temporal).
