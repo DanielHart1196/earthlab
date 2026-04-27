@@ -288,3 +288,48 @@ When building the filter panel for a dynamic layer:
 ### Field types (from field_schema)
 
 Common values for `type`: `text`, `number`, `integer`, `boolean`, `date`, `timestamp`. Use type to determine appropriate filter UI (range slider for numeric, toggle/select for text/boolean, date picker for temporal).
+
+## Print Projection Architecture
+
+### Direction
+
+Long term, the print renderer should be a separate projection-first pipeline:
+
+- `MapLibre` remains the interactive web renderer
+- `Deck` becomes the print renderer
+- `d3-geo` owns projection math
+
+### Principle
+
+Do not rely on `geoPath(..., collector)` output as direct polygon geometry for deck fill layers, especially for orthographic and other clipped projections.
+
+Instead:
+
+1. Keep source data as geographic GeoJSON in lon/lat
+2. Project geometry through `d3-geo`
+3. Clip geometry explicitly to the active projection boundary when needed
+4. Rebuild valid projected polygons, lines, and points as normalized XY geometry
+5. Pass only that normalized XY geometry into deck layers
+
+### Required Internal Module
+
+Add a dedicated print geometry projection layer, likely something like:
+
+- `src/print/project-geometry.js`
+
+Responsibilities:
+
+- accept geographic GeoJSON plus a projection function
+- return normalized projected geometry buckets:
+  - `polygons`
+  - `lines`
+  - `points`
+- preserve multipolygons and holes correctly
+- handle projection-edge clipping explicitly
+- become the shared foundation for land, ocean, graticules, dynamic layers, and filters
+
+### Orthographic Note
+
+For orthographic specifically, the hard part is correct visible-hemisphere clipping and valid ring reconstruction after clipping.
+
+That is the main blocker to a robust long-term print renderer, and it should be solved in the projection pipeline rather than patched at the rendering layer.

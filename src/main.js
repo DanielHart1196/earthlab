@@ -1,7 +1,8 @@
 import maplibregl from "maplibre-gl";
+import { feature as topoFeature } from "topojson-client";
 import { LayerExtension } from "@deck.gl/core";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { GeoJsonLayer, SolidPolygonLayer } from "@deck.gl/layers";
+import { GeoJsonLayer } from "@deck.gl/layers";
 import {
   buildDefaultLayerState,
   getChannelTarget,
@@ -13,10 +14,15 @@ import {
 import { createPaletteStore, normalizeHexColor } from "./core/palette-store.js";
 import { getSupabaseCatalog, getLayerFieldValues, loadLayerDatasets, loadLayerFromSupabase } from "./sources/supabase/layer-loader.js";
 import { createMapShare, loadMapShare } from "./sources/supabase/map-share-loader.js";
+import { createPrintView } from "./print-view.js";
+import { isValidProjectionId } from "./print/projection-adapters.js";
 import { mountColorControl } from "./ui/color-control.js";
 import "./styles.css";
 
 const LAND_LOW_URL = "/data/world-atlas/ne_110m_land.geojson";
+const LAND_HIGH_URL = "/data/world-atlas/countries-dissolved-land.geojson";
+const LAND_PRINT_LOW_URL = "/data/world-atlas/land-110m.json";
+const LAND_PRINT_HIGH_URL = "/data/world-atlas/land-50m.json";
 const GRATICULES_URL = "/data/graticules/world-graticules-10deg.geojson";
 const OCEAN_RING = [[
   [-180, -90],
@@ -25,10 +31,27 @@ const OCEAN_RING = [[
   [-180, 90],
   [-180, -90],
 ]];
-
+const OCEAN_GEOJSON = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "Polygon",
+        coordinates: OCEAN_RING,
+      },
+    },
+  ],
+};
 const STORAGE_KEY = "earthlab.earth.style.v1";
 const MAP_NAME_KEY = "earthlab.mapName.v1";
 const MAP_VIEW_KEY = "earthlab.mapView.v1";
+const VIEW_MODE_KEY = "earthlab.viewMode.v1";
+const PRINT_CAMERA_KEY = "earthlab.printCamera.v1";
+const PRINT_PROJECTION_KEY = "earthlab.printProjection.v1";
+const NATURAL_EARTH_CAMERA_KEY = "earthlab.naturalEarthCamera.v1";
+const LAND_QUALITY_KEY = "earthlab.landQuality.v1";
 const SHARE_QUERY_KEY = "share";
 const HORIZON_CLIP_EPSILON = 0.002;
 const DEFAULT_MAP_VIEW = {
@@ -52,7 +75,13 @@ const state = {
   map: null,
   overlay: null,
   landLow: null,
+  landHigh: null,
+  landHighRequest: null,
   land: null,
+  landPrintLow: null,
+  landPrintHigh: null,
+  landPrint: null,
+  landPrintHighRequest: null,
   graticules: null,
   layerState: readLayerState(),
   expandedRows: {
@@ -95,11 +124,21 @@ const state = {
   dynamicDeckLayerCache: new Map(),
   dynamicLayerErrors: new Map(),
   loadingDynamicLayerIds: new Set(),
+  viewMode: readViewMode(),
+  printView: null,
+  printCamera: readPrintCamera(),
+  printProjection: readPrintProjection(),
+  naturalEarthCamera: readNaturalEarthCamera(),
+  landQuality: readLandQuality(),
+  dynamicLayersRevision: 0,
+  dynamicLayerDataRevision: 0,
 };
 
 const paletteStore = createPaletteStore();
 const paletteControls = new Map();
 const dynamicPaletteControls = new Map();
+let layerStatePersistTimer = 0;
+let dynamicLayerDataPrintSnapshot = [];
 
 function setBootStage(stage) {
   document.body.dataset.earthlabStage = stage;
@@ -182,7 +221,10 @@ const controls = {
   panelCloseBtn: document.getElementById("panelCloseBtn"),
   earthLayersBtn: document.getElementById("earthLayersBtn"),
   appearanceBtn: document.getElementById("appearanceBtn"),
+  viewModeBtn: document.getElementById("viewModeBtn"),
   layerStack: document.querySelector(".earthlab-layer-stack"),
+  map: document.getElementById("map"),
+  printView: document.getElementById("printView"),
   appearanceRows: document.getElementById("appearanceRows"),
   appearanceSwatch: document.getElementById("appearanceSwatch"),
   appearanceToggle: document.getElementById("appearanceToggle"),
@@ -238,6 +280,9 @@ const controls = {
   landLineOpacityValue: document.getElementById("landLineOpacityValue"),
   landLineWidthSlider: document.getElementById("landLineWidthSlider"),
   landLineWidthValue: document.getElementById("landLineWidthValue"),
+  landQualityToggle: document.getElementById("landQualityToggle"),
+  landQualityLowBtn: document.getElementById("landQualityLowBtn"),
+  landQualityHighBtn: document.getElementById("landQualityHighBtn"),
   addLayerBtn: document.getElementById("addLayerBtn"),
   addLayerPanel: document.getElementById("addLayerPanel"),
   addLayerExistingList: document.getElementById("addLayerExistingList"),
@@ -256,6 +301,104 @@ function ensureReorderHandles(root = controls.layerStack) {
   });
 }
 
+function readPrintCamera() {
+  try {
+    const raw = window.localStorage?.getItem(PRINT_CAMERA_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const zoomScale = Number(parsed?.zoomScale);
+    const rotationLon = Number(parsed?.rotationLon);
+    const rotationLat = Number(parsed?.rotationLat);
+    if (Number.isFinite(zoomScale) && Number.isFinite(rotationLon) && Number.isFinite(rotationLat)) {
+      return { zoomScale: Math.max(1, Math.min(16, zoomScale)), rotationLon, rotationLat };
+    }
+  } catch {
+    // Fall through to default.
+  }
+  return { zoomScale: 1, rotationLon: 0, rotationLat: 0 };
+}
+
+function persistPrintCamera() {
+  try {
+    window.localStorage?.setItem(PRINT_CAMERA_KEY, JSON.stringify(state.printCamera));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readPrintProjection() {
+  try {
+    const raw = window.localStorage?.getItem(PRINT_PROJECTION_KEY);
+    return isValidProjectionId(raw) ? raw : "orthographic";
+  } catch {
+    return "orthographic";
+  }
+}
+
+function persistPrintProjection() {
+  try {
+    window.localStorage?.setItem(PRINT_PROJECTION_KEY, state.printProjection);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readNaturalEarthCamera() {
+  try {
+    const raw = window.localStorage?.getItem(NATURAL_EARTH_CAMERA_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const zoomScale = Number(parsed?.zoomScale);
+    const panX = Number(parsed?.panX);
+    const panY = Number(parsed?.panY);
+    if (Number.isFinite(zoomScale) && Number.isFinite(panX) && Number.isFinite(panY)) {
+      return { zoomScale: Math.max(1, Math.min(16, zoomScale)), panX, panY };
+    }
+  } catch {
+    // Fall through to default.
+  }
+  return { zoomScale: 1, panX: 0, panY: 0 };
+}
+
+function persistNaturalEarthCamera() {
+  try {
+    window.localStorage?.setItem(NATURAL_EARTH_CAMERA_KEY, JSON.stringify(state.naturalEarthCamera));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readViewMode() {
+  try {
+    const raw = window.localStorage?.getItem(VIEW_MODE_KEY);
+    return raw === "print" ? "print" : "web";
+  } catch {
+    return "web";
+  }
+}
+
+function persistViewMode() {
+  try {
+    window.localStorage?.setItem(VIEW_MODE_KEY, state.viewMode);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readLandQuality() {
+  try {
+    return window.localStorage?.getItem(LAND_QUALITY_KEY) === "high" ? "high" : "low";
+  } catch {
+    return "low";
+  }
+}
+
+function persistLandQuality() {
+  try {
+    window.localStorage?.setItem(LAND_QUALITY_KEY, state.landQuality);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function readLayerState() {
   try {
     const raw = window.localStorage?.getItem(STORAGE_KEY);
@@ -265,13 +408,32 @@ function readLayerState() {
   }
 }
 
-function persistLayerState() {
+function writeLayerStateToStorage() {
   try {
     window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(state.layerState));
   } catch {
     // Ignore storage failures to keep the runtime usable.
   }
 }
+
+function persistLayerState({ immediate = false } = {}) {
+  if (layerStatePersistTimer) {
+    window.clearTimeout(layerStatePersistTimer);
+    layerStatePersistTimer = 0;
+  }
+  if (immediate) {
+    writeLayerStateToStorage();
+    return;
+  }
+  layerStatePersistTimer = window.setTimeout(() => {
+    layerStatePersistTimer = 0;
+    writeLayerStateToStorage();
+  }, 120);
+}
+
+window.addEventListener("pagehide", () => {
+  persistLayerState({ immediate: true });
+});
 
 function readMapView() {
   try {
@@ -420,6 +582,9 @@ function applyShareSnapshot(snapshot) {
 
   state.layerState = normalized.ls;
   state.dynamicLayerData.clear();
+  state.dynamicLayersRevision += 1;
+  state.dynamicLayerDataRevision += 1;
+  refreshDynamicLayerDataPrintSnapshot();
   state.dynamicDeckLayerCache.clear();
   state.dynamicLayerErrors.clear();
   state.loadingDynamicLayerIds.clear();
@@ -509,6 +674,94 @@ function defer(task) {
     return;
   }
   window.setTimeout(task, 0);
+}
+
+function ensureHighDetailLandLoaded() {
+  if (state.landHigh) {
+    return Promise.resolve(state.landHigh);
+  }
+  if (state.landHighRequest) {
+    return state.landHighRequest;
+  }
+  state.landHighRequest = loadJson(LAND_HIGH_URL)
+    .then((landHigh) => {
+      state.landHigh = landHigh;
+      state.landHighRequest = null;
+      applyLandQuality();
+      return landHigh;
+    })
+    .catch((error) => {
+      state.landHighRequest = null;
+      console.warn("[earthlab] Failed to load high-detail land.", error);
+      throw error;
+    });
+  return state.landHighRequest;
+}
+
+function loadHighDetailLandWhenIdle() {
+  defer(() => {
+    void ensureHighDetailLandLoaded();
+  });
+}
+
+function syncLandQualityControls() {
+  if (!controls.landQualityLowBtn || !controls.landQualityHighBtn) {
+    return;
+  }
+  controls.landQualityLowBtn.setAttribute("aria-checked", String(state.landQuality === "low"));
+  controls.landQualityHighBtn.setAttribute("aria-checked", String(state.landQuality === "high"));
+}
+
+function applyLandQuality() {
+  state.land = state.landQuality === "high" && state.landHigh
+    ? state.landHigh
+    : state.landLow;
+  state.landPrint = state.landQuality === "high" && state.landPrintHigh
+    ? state.landPrintHigh
+    : state.landPrintLow;
+  updateOverlay();
+  syncPrintView();
+}
+
+function ensureHighDetailPrintLandLoaded() {
+  if (state.landPrintHigh) {
+    return Promise.resolve(state.landPrintHigh);
+  }
+  if (state.landPrintHighRequest) {
+    return state.landPrintHighRequest;
+  }
+  state.landPrintHighRequest = loadJson(LAND_PRINT_HIGH_URL)
+    .then((topology) => {
+      state.landPrintHigh = topoFeature(topology, topology.objects.land);
+      state.landPrintHighRequest = null;
+      applyLandQuality();
+      return state.landPrintHigh;
+    })
+    .catch((error) => {
+      state.landPrintHighRequest = null;
+      console.warn("[earthlab] Failed to load high-detail print land.", error);
+      throw error;
+    });
+  return state.landPrintHighRequest;
+}
+
+function loadPrintLandWhenIdle() {
+  defer(() => {
+    void loadJson(LAND_PRINT_LOW_URL)
+      .then((topology) => {
+        state.landPrintLow = topoFeature(topology, topology.objects.land);
+        applyLandQuality();
+        if (state.landQuality === "high") {
+          void ensureHighDetailPrintLandLoaded();
+        }
+      })
+      .catch((error) => {
+        console.warn("[earthlab] Failed to load low-detail print land.", error);
+      });
+  });
+  defer(() => {
+    void ensureHighDetailPrintLandLoaded();
+  });
 }
 
 function getElementTarget(event) {
@@ -897,6 +1150,10 @@ function getDynamicLayerData(layerId) {
   return state.dynamicLayerData.get(layerId) ?? null;
 }
 
+function refreshDynamicLayerDataPrintSnapshot() {
+  dynamicLayerDataPrintSnapshot = Array.from(state.dynamicLayerData.entries()).map(([id, data]) => ({ id, data }));
+}
+
 function setDynamicLayerData(layerId, geojson) {
   state.dynamicLayerData.set(layerId, {
     geojson,
@@ -907,6 +1164,8 @@ function setDynamicLayerData(layerId, geojson) {
       point: filterGeojsonByGeometryFamily(geojson, "point"),
     },
   });
+  state.dynamicLayerDataRevision += 1;
+  refreshDynamicLayerDataPrintSnapshot();
   invalidateDynamicDeckLayerCache(layerId);
 }
 
@@ -922,10 +1181,11 @@ function invalidateDynamicDeckLayerCache(layerId = null) {
   state.dynamicDeckLayerCache.clear();
 }
 
-function persistDynamicLayers() {
+function persistDynamicLayers({ immediate = false } = {}) {
   state.layerState.dynamicLayers = normalizeDynamicLayers(state.layerState.dynamicLayers);
+  state.dynamicLayersRevision += 1;
   invalidateDynamicDeckLayerCache();
-  persistLayerState();
+  persistLayerState({ immediate });
 }
 
 function getDynamicGeometryChannels(layer) {
@@ -1487,7 +1747,7 @@ function getToolbarAustraliaPaths() {
     "M4.2 13.1C4.7 11.2 6.4 9.9 8.4 9.3C9.8 8.9 11 9.5 12.1 9.1C13.1 8.7 13.3 7.5 14 7.5C14.8 8.2 14.5 9.4 15.1 9.9C16.2 9.4 17.4 8.4 19.1 8.8C20.8 9.2 22 10.8 21.9 12.7C21.8 14.6 20.4 16.2 18.7 17.1C17.6 17.7 16.5 17.5 15.5 18.1C14.4 18.7 13.8 19.7 12.4 19.8C11.1 19.8 10.6 18.6 9.3 18.3C8.1 18.1 6.6 18.5 5.6 17.4C4.5 16.3 3.8 14.6 4.2 13.1Z",
     "M18.1 19.4C18.7 19 19.5 19 20.1 19.5C20.3 20.1 19.9 20.8 19.2 21C18.5 21 18 20.4 18.1 19.4Z",
   ];
-  const features = state.land?.features;
+  const features = state.landLow?.features;
   if (!Array.isArray(features)) {
     return fallbackPaths;
   }
@@ -1562,6 +1822,127 @@ function getScreenBackgroundFill() {
   return `rgb(${Math.round(screenRgb.r * screenOpacity)}, ${Math.round(screenRgb.g * screenOpacity)}, ${Math.round(screenRgb.b * screenOpacity)})`;
 }
 
+function syncPrintView() {
+  if (!state.printView) {
+    return;
+  }
+  state.printView.setProps({
+    projection: state.printProjection,
+    backgroundFill: getScreenBackgroundFill(),
+    oceanFill: getChannel("ocean", "fill"),
+    landFill: getChannel("land", "fill"),
+    landLine: getChannel("land", "line"),
+    graticulesLine: getChannel("graticules", "line"),
+    land: state.landPrint,
+    interactionLand: state.landPrintLow ?? state.landPrint,
+    graticules: state.graticules,
+    dynamicLayers: getDynamicLayers(),
+    dynamicLayersRevision: state.dynamicLayersRevision,
+    dynamicLayerData: dynamicLayerDataPrintSnapshot,
+    dynamicLayerDataRevision: state.dynamicLayerDataRevision,
+    earthRenderOrder: [...normalizeRenderOrder(state.layerState.order)],
+    printCamera: { ...state.printCamera },
+    naturalEarthCamera: { ...state.naturalEarthCamera },
+  });
+}
+
+function ensurePrintView() {
+  if (state.printView || !controls.printView) {
+    return;
+  }
+  state.printView = createPrintView({
+    mount: controls.printView,
+    onCameraChange(nextCamera) {
+      state.printCamera = { ...nextCamera };
+      persistPrintCamera();
+    },
+    onNaturalEarthCameraChange(nextCamera) {
+      state.naturalEarthCamera = { ...nextCamera };
+      persistNaturalEarthCamera();
+    },
+    onProjectionChange(nextProjection) {
+      state.printProjection = nextProjection;
+      persistPrintProjection();
+      syncPrintView();
+    },
+  });
+}
+
+function prewarmPrintView() {
+  if (state.printView || !controls.printView) {
+    return;
+  }
+  const wasHidden = controls.printView.hidden;
+  const previousVisibility = controls.printView.style.visibility;
+  const previousPointerEvents = controls.printView.style.pointerEvents;
+  if (wasHidden) {
+    controls.printView.style.visibility = "hidden";
+    controls.printView.style.pointerEvents = "none";
+    controls.printView.hidden = false;
+  }
+  ensurePrintView();
+  syncPrintView();
+  if (wasHidden) {
+    controls.printView.hidden = true;
+    controls.printView.style.visibility = previousVisibility;
+    controls.printView.style.pointerEvents = previousPointerEvents;
+  }
+}
+
+const ORTHO_BASE_LON = -20;
+const ORTHO_BASE_LAT = 10;
+
+function printCameraFromMapView() {
+  if (!state.map) return;
+  const center = state.map.getCenter();
+  const zoom = state.map.getZoom();
+  state.printCamera = {
+    rotationLon: -center.lng - 20,
+    rotationLat: 10 - center.lat,
+    zoomScale: Math.max(1, Math.min(16, Math.pow(2, zoom - 1))),
+  };
+  persistPrintCamera();
+}
+
+function mapViewFromPrintCamera() {
+  if (!state.map) return;
+  const { rotationLon, rotationLat, zoomScale } = state.printCamera;
+  const lng = ORTHO_BASE_LON - rotationLon;
+  const lat = ORTHO_BASE_LAT - rotationLat;
+  const zoom = Math.log2(Math.max(1, zoomScale)) + 1;
+  state.map.jumpTo({ center: [lng, lat], zoom });
+}
+
+function syncViewMode() {
+  if (!state.map) {
+    document.body.dataset.earthlabMode = "web";
+    if (controls.viewModeBtn) {
+      controls.viewModeBtn.textContent = "Print";
+    }
+    controls.map.hidden = false;
+    controls.printView.hidden = true;
+    return;
+  }
+  document.body.dataset.earthlabMode = state.viewMode;
+  if (controls.viewModeBtn) {
+    controls.viewModeBtn.textContent = state.viewMode === "print" ? "Web" : "Print";
+  }
+  const isPrint = state.viewMode === "print";
+  controls.map.hidden = isPrint;
+  controls.printView.hidden = !isPrint;
+  if (isPrint) {
+    printCameraFromMapView();
+    ensurePrintView();
+    syncPrintView();
+    return;
+  }
+  mapViewFromPrintCamera();
+  window.setTimeout(() => {
+    state.map?.resize();
+    updateOverlayLayersOnly();
+  }, 0);
+}
+
 function mountPaletteControls() {
   PALETTE_BINDINGS.forEach(({ controlId, layerId, channelId, appearanceKind, appearanceKey = "color" }) => {
     const mount = document.getElementById(controlId);
@@ -1622,6 +2003,7 @@ function syncControlsFromState() {
   controls.landToggle.setAttribute("aria-checked", String(isLandGroupVisible()));
   controls.landFillToggle.setAttribute("aria-checked", String(getChannel("land", "fill")?.visible !== false));
   controls.landLineToggle.setAttribute("aria-checked", String(getChannel("land", "line")?.visible !== false));
+  syncLandQualityControls();
 
   controls.appearanceRows.hidden = !state.appearanceExpanded;
   controls.appearanceBtn.dataset.active = String(state.appearanceExpanded);
@@ -1680,6 +2062,24 @@ function syncControlsFromState() {
   renderToolbarIcons();
 }
 
+function setEarthSliderValueLabel(controlKey, rawValue) {
+  const valueControl = controls[controlKey.replace("Slider", "Value")];
+  if (!valueControl) {
+    return;
+  }
+  if (controlKey.toLowerCase().includes("opacity")) {
+    valueControl.textContent = `${Math.round(Number(rawValue))}%`;
+    return;
+  }
+  valueControl.textContent = `${Number(rawValue).toFixed(1)} px`;
+}
+
+function getPrintPreviewPassesForChannel(channelId) {
+  return channelId === "point" || channelId === "pointLine"
+    ? ["points"]
+    : ["dynamic-shapes"];
+}
+
 function updateStatus() {
   return;
 }
@@ -1697,10 +2097,12 @@ function buildLayers() {
   const landLine = getChannel("land", "line");
 
   const layerBuilders = {
-    "ocean.fill": () => new SolidPolygonLayer({
+    "ocean.fill": () => new GeoJsonLayer({
       id: "earthlab-ocean",
-      data: [{ polygon: OCEAN_RING }],
-      getPolygon: (entry) => entry.polygon,
+      ...clippedLayerProps,
+      data: OCEAN_GEOJSON,
+      filled: true,
+      stroked: false,
       getFillColor: toDeckColor(oceanFill?.color, percentToAlpha(oceanFill?.opacity)),
       visible: isLayerVisible("ocean") && oceanFill?.visible !== false,
       pickable: false,
@@ -1964,19 +2366,40 @@ function filterGeojsonByGeometryFamily(geojson, family) {
 
 function updateOverlay() {
   if (!state.overlay) {
+    syncPrintView();
     return;
   }
   syncControlsFromState();
   state.overlay.setProps({ layers: buildLayers() });
   updateStatus();
+  syncPrintView();
 }
 
-function updateOverlayLayersOnly() {
+function updateVisibleSurfacePreview({ layersOnly = false, printPasses = [], sceneOverrides = null } = {}) {
+  if (state.viewMode === "print") {
+    if (!printPasses.length && !sceneOverrides) {
+      return;
+    }
+    state.printView?.previewStylePatch({ passes: printPasses, sceneOverrides });
+    return;
+  }
   if (!state.overlay) {
     return;
   }
   state.overlay.setProps({ layers: buildLayers() });
+  if (!layersOnly) {
+    applyAppearanceStyles();
+  }
+}
+
+function updateOverlayLayersOnly() {
+  if (!state.overlay) {
+    syncPrintView();
+    return;
+  }
+  state.overlay.setProps({ layers: buildLayers() });
   updateStatus();
+  syncPrintView();
 }
 
 function syncPanelCollapsed() {
@@ -2209,6 +2632,8 @@ function showDeleteConfirmPanel(drag) {
       state.dynamicExpandedLayerIds.delete(layerId);
       state.activeDynamicStylePanels.delete(layerId);
       state.dynamicLayerData.delete(layerId);
+      state.dynamicLayerDataRevision += 1;
+      refreshDynamicLayerDataPrintSnapshot();
       invalidateDynamicDeckLayerCache(layerId);
       persistDynamicLayers();
       persistLayerState();
@@ -3146,22 +3571,32 @@ function bindControls() {
     ["landLineWidthSlider", { layerId: "land", channelId: "line", key: "width", numeric: true }],
   ].forEach(([controlKey, target]) => {
     controls[controlKey].addEventListener("input", (event) => {
+      const nextValue = target.numeric ? Number(event.currentTarget.value) : event.currentTarget.value;
       if (target.appearanceKind) {
         const appearance = getAppearance(target.appearanceKind);
         if (!appearance) {
           return;
         }
-        appearance[target.key] = target.numeric ? Number(event.currentTarget.value) : event.currentTarget.value;
-        persistLayerState();
-        updateOverlay();
+        appearance[target.key] = nextValue;
+        setEarthSliderValueLabel(controlKey, nextValue);
+        updateVisibleSurfacePreview({
+          printPasses: target.appearanceKind === "screen" ? [] : [],
+          sceneOverrides: target.appearanceKind === "screen"
+            ? { backgroundFill: getScreenBackgroundFill() }
+            : null,
+        });
         return;
       }
       const channel = getChannel(target.layerId, target.channelId);
       if (!channel) {
         return;
       }
-      channel[target.key] = target.numeric ? Number(event.currentTarget.value) : event.currentTarget.value;
-      persistLayerState();
+      channel[target.key] = nextValue;
+      setEarthSliderValueLabel(controlKey, nextValue);
+      updateVisibleSurfacePreview({ printPasses: ["earth"] });
+    });
+    controls[controlKey].addEventListener("change", () => {
+      persistLayerState({ immediate: true });
       updateOverlay();
     });
   });
@@ -3283,6 +3718,24 @@ function bindControls() {
       void ensureExistingLayersLoaded();
     }
     syncAddLayerPanel();
+  });
+
+  controls.landQualityToggle?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const button = event.target.closest("[data-land-quality]");
+    const nextQuality = button?.dataset?.landQuality;
+    if (!nextQuality || nextQuality === state.landQuality) {
+      return;
+    }
+    state.landQuality = nextQuality === "high" ? "high" : "low";
+    persistLandQuality();
+    applyLandQuality();
+    if (state.landQuality === "high" && !state.landHigh) {
+      void ensureHighDetailLandLoaded();
+    }
+    if (state.landQuality === "high" && !state.landPrintHigh) {
+      void ensureHighDetailPrintLandLoaded();
+    }
   });
 
   controls.addLayerSearchInput.addEventListener("input", (event) => {
@@ -3499,8 +3952,6 @@ function bindControls() {
       if (key === "opacity") channel.opacity = clampOpacity(value);
       else if (key === "width") channel.width = Math.max(0, value);
       else if (key === "radius") channel.radius = Math.max(1, value);
-      persistDynamicLayers();
-      invalidateDynamicDeckLayerCache(ownerId);
       const chSwatch = controls.dynamicRows.querySelector(`[data-filter-channel-swatch="${channelId}"][data-filter-id="${filterId}"]`);
       renderLegendButton(chSwatch, getFilterChannelLegendSpec(filter, channelId));
       const parentSwatch = controls.dynamicRows.querySelector(`[data-filter-swatch="${filterId}"]`);
@@ -3510,7 +3961,10 @@ function bindControls() {
         if (key === "opacity") valueLabel.textContent = `${Math.round(value)}%`;
         else valueLabel.textContent = `${value.toFixed(1)} px`;
       }
-      updateOverlayLayersOnly();
+      updateVisibleSurfacePreview({
+        layersOnly: true,
+        printPasses: getPrintPreviewPassesForChannel(channelId),
+      });
       return;
     }
 
@@ -3531,8 +3985,32 @@ function bindControls() {
     } else if (key === "radius") {
       channel.radius = Math.max(1, value);
     }
-    persistDynamicLayers();
     updateDynamicLayerPresentation(layer.id, target.dataset.dynamicChannelId);
+    updateVisibleSurfacePreview({
+      layersOnly: true,
+      printPasses: getPrintPreviewPassesForChannel(target.dataset.dynamicChannelId),
+    });
+  });
+
+  controls.dynamicRows.addEventListener("change", (event) => {
+    const target = getElementTarget(event);
+    if (!target) {
+      return;
+    }
+
+    if (target.matches("[data-filter-channel-slider]")) {
+      const ownerId = target.dataset.filterOwnerLayerId;
+      persistDynamicLayers({ immediate: true });
+      invalidateDynamicDeckLayerCache(ownerId);
+      updateOverlayLayersOnly();
+      return;
+    }
+
+    if (!target.matches("[data-dynamic-slider]")) {
+      return;
+    }
+
+    persistDynamicLayers({ immediate: true });
     updateOverlayLayersOnly();
   });
 
@@ -3665,6 +4143,7 @@ async function bootstrap() {
   }
 
   state.map.on("load", () => {
+    syncViewMode();
     state.overlay = new MapboxOverlay({
       interleaved: false,
       layers: buildLayers(),
@@ -3677,15 +4156,22 @@ async function bootstrap() {
     void loadJson(LAND_LOW_URL)
       .then((landLow) => {
         state.landLow = landLow;
-        state.land = landLow;
         setBootStage("ready");
-        updateOverlay();
+        applyLandQuality();
         easeToSharedMapViewAfterBoot();
+        loadHighDetailLandWhenIdle();
+        loadPrintLandWhenIdle();
+        defer(() => {
+          prewarmPrintView();
+        });
         defer(() => {
           void loadJson(GRATICULES_URL)
             .then((graticules) => {
               state.graticules = graticules;
               updateOverlay();
+              defer(() => {
+                prewarmPrintView();
+              });
             })
             .catch((error) => {
               console.warn("[earthlab] Failed to load graticules.", error);
@@ -3700,6 +4186,9 @@ async function bootstrap() {
               state.graticules = graticules;
               updateOverlay();
               easeToSharedMapViewAfterBoot();
+              defer(() => {
+                prewarmPrintView();
+              });
             })
             .catch((graticulesError) => {
               console.warn("[earthlab] Failed to load graticules.", graticulesError);
@@ -3789,13 +4278,21 @@ function bindReloadControls() {
 }
 
 function bindShareControls() {
+  const viewModeBtn = document.getElementById("viewModeBtn");
   const shareBtn = document.getElementById("shareBtn");
-  if (!shareBtn) {
+  if (!viewModeBtn || !shareBtn) {
     return;
   }
 
   const sharePopup = document.getElementById("sharePopup");
   const sharePopupUrl = document.getElementById("sharePopupUrl");
+
+  viewModeBtn.addEventListener("click", () => {
+    state.viewMode = state.viewMode === "print" ? "web" : "print";
+    persistViewMode();
+    sharePopup.hidden = true;
+    syncViewMode();
+  });
 
   shareBtn.addEventListener("click", async () => {
     sharePopupUrl.textContent = "";

@@ -72,9 +72,10 @@
       }
     </style>
   </head>
-  <body data-earthlab-stage="boot" data-earthlab-ui="boot">
+  <body data-earthlab-stage="boot" data-earthlab-ui="boot" data-earthlab-mode="web">
     <main class="earthlab-app" id="app">
       <div class="earthlab-map" id="map"></div>
+      <div class="earthlab-print-view" id="printView" hidden></div>
       <section class="earthlab-panel" aria-label="Earth controls">
         <div class="earthlab-panel-header">
           <div class="earthlab-panel-bar">
@@ -179,7 +180,16 @@
               <button class="earthlab-row-toggle" id="landToggle" type="button" role="checkbox" aria-checked="true">
                 Land
               </button>
-              <span class="earthlab-row-slot" aria-hidden="true"></span>
+              <span class="earthlab-row-slot">
+                <span class="earthlab-segmented" id="landQualityToggle" role="radiogroup" aria-label="Web land quality">
+                  <button class="earthlab-segmented-option" id="landQualityLowBtn" type="button" role="radio" aria-checked="true" data-land-quality="low">
+                    Low
+                  </button>
+                  <button class="earthlab-segmented-option" id="landQualityHighBtn" type="button" role="radio" aria-checked="false" data-land-quality="high">
+                    High
+                  </button>
+                </span>
+              </span>
               <div class="earthlab-row-children" id="landChildren" hidden>
                 <article class="earthlab-row earthlab-row-child" data-row-id="landFill" data-layer-id="land.fill" data-reorder-id="land.fill" data-reorder-scope="land">
                   <span class="earthlab-row-swatch" id="landFillSwatch" aria-hidden="true"></span>
@@ -318,7 +328,8 @@
         <h2 class="earthlab-filter-panel-title">Filter</h2>
       </div>
       <div class="earthlab-share-wrap">
-        <span class="earthlab-share-print">Print |</span>
+        <button class="earthlab-view-toggle" id="viewModeBtn" type="button">Print</button>
+        <span class="earthlab-share-separator" aria-hidden="true">|</span>
         <button class="earthlab-share" id="shareBtn" type="button" title="Copy share URL" aria-label="Copy share URL"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18" width="1em" height="1em" fill="none" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:middle"><circle cx="13.5" cy="3.5" r="2" fill="currentColor"/><circle cx="4.5" cy="9" r="2" fill="currentColor"/><circle cx="13.5" cy="14.5" r="2" fill="currentColor"/><line x1="6.3" y1="8.1" x2="11.7" y2="4.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="6.3" y1="9.9" x2="11.7" y2="13.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
       </div>
       <div class="earthlab-share-popup" id="sharePopup" hidden>
