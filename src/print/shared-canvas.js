@@ -91,6 +91,7 @@ export function drawProjectedScene(
     includeEarth = true,
     includeDynamicShapes = true,
     includePoints = true,
+    perfTracker = null,
   } = {},
 ) {
   const run = () => {
@@ -131,24 +132,35 @@ export function drawProjectedScene(
       });
     }
 
-    for (const command of preparedDynamicCommands) {
-      if (command.kind === "fill" && includeDynamicShapes) {
-        if (!drawFilledPath(ctx, projectionAdapter.getCommandPath(command), command.fill)) {
-          drawFilledGeometry(ctx, path, command.geojson, command.fill);
-        }
-      } else if (command.kind === "line" && includeDynamicShapes) {
-        if (!drawStrokedPath(ctx, projectionAdapter.getCommandPath(command), command.line)) {
-          drawStrokedGeometry(ctx, path, command.geojson, command.line);
-        }
-      } else if (command.kind === "point" && includePoints) {
-        drawPointPositions(
-          ctx,
-          projectionAdapter.getProjectedPoints(command),
-          command.point,
-          command.pointLine,
-        );
-      }
+    if (!includeDynamicShapes && !includePoints) {
+      ctx.restore();
+      return;
     }
+
+    perfTracker?.gauge("dynamicCommandCount", preparedDynamicCommands.length);
+    perfTracker?.time("dynamicReplayMs", () => {
+      for (const command of preparedDynamicCommands) {
+        if (command.kind === "fill" && includeDynamicShapes) {
+          perfTracker?.increment("dynamicFillCommands");
+          if (!drawFilledPath(ctx, projectionAdapter.getCommandPath(command), command.fill)) {
+            drawFilledGeometry(ctx, path, command.geojson, command.fill);
+          }
+        } else if (command.kind === "line" && includeDynamicShapes) {
+          perfTracker?.increment("dynamicLineCommands");
+          if (!drawStrokedPath(ctx, projectionAdapter.getCommandPath(command), command.line)) {
+            drawStrokedGeometry(ctx, path, command.geojson, command.line);
+          }
+        } else if (command.kind === "point" && includePoints) {
+          perfTracker?.increment("dynamicPointCommands");
+          drawPointPositions(
+            ctx,
+            projectionAdapter.getProjectedPoints(command),
+            command.point,
+            command.pointLine,
+          );
+        }
+      }
+    });
 
     ctx.restore();
   };

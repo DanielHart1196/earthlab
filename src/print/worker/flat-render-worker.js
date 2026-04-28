@@ -1,4 +1,5 @@
 import { buildDynamicDrawCommands } from "../dynamic-commands.js";
+import { createPerfTracker } from "../perf-metrics.js";
 import { createProjectionAdapter, createProjectionAdapterState, getProjectionViewportTransform } from "../projection-adapters.js";
 import { createRenderInvalidation } from "../render-invalidation.js";
 import { drawProjectedScene, prepareContext } from "../shared-canvas.js";
@@ -10,6 +11,7 @@ let pixelRatio = 1;
 let sceneRevision = 0;
 let interactionActive = false;
 let projection = "naturalEarth";
+let locked = true;
 let camera = { zoomScale: 1, panX: 0, panY: 0 };
 let frameRequestKey = "";
 let sceneProps = {
@@ -41,6 +43,7 @@ const layerContexts = {
 let frameSurface = null;
 let frameContext = null;
 let renderQueued = false;
+let perfTracker = createPerfTracker("worker", false);
 
 function createSurface() {
   return new OffscreenCanvas(
@@ -71,7 +74,11 @@ function ensureFrameSurface() {
 }
 
 function rebuildPreparedCommands() {
-  preparedDynamicCommands = buildDynamicDrawCommands(sceneProps.dynamicLayers, sceneProps.dynamicLayerData);
+  preparedDynamicCommands = perfTracker.time(
+    "buildDynamicCommandsMs",
+    () => buildDynamicDrawCommands(sceneProps.dynamicLayers, sceneProps.dynamicLayerData),
+  );
+  perfTracker.gauge("preparedDynamicCommands", preparedDynamicCommands.length);
 }
 
 function buildBaseProjectionAdapter(renderQuality = "settled") {
@@ -80,7 +87,9 @@ function buildBaseProjectionAdapter(renderQuality = "settled") {
     width,
     height,
     camera,
+    locked,
     state: projectionAdapterState,
+    perfTracker,
     renderQuality,
   });
 }
@@ -107,6 +116,7 @@ function rebuildLayer(name) {
       includeEarth: name === "earth",
       includeDynamicShapes: name === "dynamicShapes",
       includePoints: name === "points",
+      perfTracker,
     },
   );
 }
@@ -114,7 +124,11 @@ function rebuildLayer(name) {
 function drawInteractionFrame() {
   ensureFrameSurface();
   prepareContext(frameContext, width, height, sceneProps.backgroundFill);
-  const transform = getProjectionViewportTransform(projection, width, height, camera);
+  const transform = getProjectionViewportTransform(projection, width, height, camera, { locked });
+  if (!transform) {
+    drawSettledFrame();
+    return;
+  }
   frameContext.save();
   frameContext.transform(transform.zoom, 0, 0, transform.zoom, transform.tx, transform.ty);
   frameContext.drawImage(layerSurfaces.earth, 0, 0, width, height);
@@ -139,6 +153,7 @@ function drawSettledFrame() {
       includeEarth: true,
       includeDynamicShapes: true,
       includePoints: true,
+      perfTracker,
     },
   );
 }
@@ -156,6 +171,7 @@ function postFrame() {
       interactionActive,
       sceneRevision,
       frameRequestKey,
+      perf: perfTracker.publish({ reset: true }),
     },
     [bitmap],
   );
@@ -166,6 +182,7 @@ function renderNow() {
   if (!width || !height) {
     return;
   }
+  const started = performance.now();
   const dirty = invalidation.consume();
   if (dirty.has("earth")) rebuildLayer("earth");
   if (dirty.has("dynamic-shapes")) rebuildLayer("dynamicShapes");
@@ -175,6 +192,7 @@ function renderNow() {
   } else {
     drawSettledFrame();
   }
+  perfTracker.recordDuration("workerRenderNowMs", performance.now() - started);
   postFrame();
 }
 
@@ -191,6 +209,7 @@ self.onmessage = (event) => {
       width = message.width;
       height = message.height;
       pixelRatio = message.pixelRatio || 1;
+      perfTracker = createPerfTracker("worker", message.perfEnabled === true);
       invalidation.invalidate("all");
       requestRender();
       break;
@@ -206,9 +225,10 @@ self.onmessage = (event) => {
       height = message.height;
       pixelRatio = message.pixelRatio || 1;
       projection = message.projection;
+      locked = message.locked !== false;
       camera = message.camera;
       frameRequestKey = message.frameRequestKey ?? "";
-      invalidation.invalidate(message.sceneDirty ? "all" : "frame");
+      invalidation.invalidate(message.sceneDirty || !locked ? "all" : "frame");
       requestRender();
       break;
     case PRINT_WORKER_MESSAGE.SET_INTERACTION:

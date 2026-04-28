@@ -1,3 +1,5 @@
+import { MAX_PRINT_ZOOM_SCALE, MIN_PRINT_ZOOM_SCALE } from "./projection-adapters.js";
+
 const DOUBLE_TAP_MAX_MS = 280;
 const DOUBLE_TAP_MAX_PX = 56;
 const DOUBLE_TAP_DRAG_DEADZONE_PX = 14;
@@ -5,12 +7,13 @@ const TOUCH_DRAG_DEADZONE_PX = 6;
 const DOUBLE_TAP_DRAG_ZOOM_RATE = 0.0075;
 const DOUBLE_TAP_ZOOM_STEP = 1.6;
 const SCROLL_ZOOM_RATE = 0.003;
-const MIN_ZOOM_SCALE = 1;
-const MAX_ZOOM_SCALE = 16;
+const MIN_ZOOM_SCALE = MIN_PRINT_ZOOM_SCALE;
+const MAX_ZOOM_SCALE = MAX_PRINT_ZOOM_SCALE;
 
 // Wires drag/pinch/scroll/double-tap gestures on a canvas element.
 // mode "rotate": drag rotates the sphere (orthographic).
-// mode "pan": drag translates the map (flat projections).
+// mode "pan": drag translates the framed projection on the page.
+// mode "project": drag navigates within a flat projection.
 // getMode() is called live so switching projections takes effect immediately.
 export function createGestureController(
   canvas,
@@ -19,6 +22,11 @@ export function createGestureController(
     onCamera,
     sensitivity,
     getMode,
+    getPanCamera = null,
+    getPanZoomCamera = null,
+    getProjectDragCamera = null,
+    getProjectZoomCamera = null,
+    canInteract = null,
     onInteractionStart = null,
     onInteractionEnd = null,
   },
@@ -90,11 +98,46 @@ export function createGestureController(
   function adjustZoomBy(delta, anchor = null) {
     const camera = getCamera();
     const { nextZoom, effectiveFactor } = getEffectiveZoom(camera, delta);
-    if (getMode?.() === "pan") {
+    const mode = getMode?.();
+    if (mode === "pan") {
       const flatAnchor = anchor ?? { cx: 0, cy: 0 };
+      const nextCamera = getPanZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorCx: flatAnchor.cx,
+        anchorCy: flatAnchor.cy,
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+        return;
+      }
       const { panX, panY } = getFlatZoomPan(camera, effectiveFactor, flatAnchor.cx, flatAnchor.cy);
       onCamera({ ...camera, zoomScale: nextZoom, panX, panY });
       return;
+    }
+    if (mode === "project") {
+      const nextCamera = getProjectZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorX: anchor ? ((anchor.cx + 0.5) * canvas.clientWidth) : (canvas.clientWidth / 2),
+        anchorY: anchor ? ((anchor.cy + 0.5) * canvas.clientHeight) : (canvas.clientHeight / 2),
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+        return;
+      }
+    }
+    if (mode === "rotate") {
+      const nextCamera = getProjectZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorX: anchor ? ((anchor.cx + 0.5) * canvas.clientWidth) : (canvas.clientWidth / 2),
+        anchorY: anchor ? ((anchor.cy + 0.5) * canvas.clientHeight) : (canvas.clientHeight / 2),
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+        return;
+      }
     }
     onCamera({ ...camera, zoomScale: nextZoom });
   }
@@ -154,7 +197,18 @@ export function createGestureController(
       ...doubleTapHoldState.startCamera,
       zoomScale: nextZoom,
     };
-    if (getMode?.() === "pan") {
+    const mode = getMode?.();
+    if (mode === "pan") {
+      const panZoomCamera = getPanZoomCamera?.({
+        camera: doubleTapHoldState.startCamera,
+        nextZoomScale: nextZoom,
+        anchorCx: 0,
+        anchorCy: 0,
+      });
+      if (panZoomCamera) {
+        onCamera(panZoomCamera);
+        return true;
+      }
       const { panX, panY } = getFlatZoomPan(
         doubleTapHoldState.startCamera,
         effectiveFactor,
@@ -163,6 +217,28 @@ export function createGestureController(
       );
       nextCamera.panX = panX;
       nextCamera.panY = panY;
+    } else if (mode === "project") {
+      const projectedCamera = getProjectZoomCamera?.({
+        camera: doubleTapHoldState.startCamera,
+        nextZoomScale: nextZoom,
+        anchorX: (doubleTapHoldState.anchor.cx + 0.5) * canvas.clientWidth,
+        anchorY: (doubleTapHoldState.anchor.cy + 0.5) * canvas.clientHeight,
+      });
+      if (projectedCamera) {
+        onCamera(projectedCamera);
+        return true;
+      }
+    } else if (mode === "rotate") {
+      const projectedCamera = getProjectZoomCamera?.({
+        camera: doubleTapHoldState.startCamera,
+        nextZoomScale: nextZoom,
+        anchorX: (doubleTapHoldState.anchor.cx + 0.5) * canvas.clientWidth,
+        anchorY: (doubleTapHoldState.anchor.cy + 0.5) * canvas.clientHeight,
+      });
+      if (projectedCamera) {
+        onCamera(projectedCamera);
+        return true;
+      }
     }
     onCamera(nextCamera);
     return true;
@@ -206,14 +282,53 @@ export function createGestureController(
     const requestedFactor = nextDistance / pinchDistance;
     const { nextZoom, effectiveFactor } = getEffectiveZoom(camera, requestedFactor);
 
-    if (getMode?.() === "pan") {
-      const { panX, panY } = getFlatZoomPan(camera, effectiveFactor, 0, 0);
-      onCamera({
-        ...camera,
-        zoomScale: nextZoom,
-        panX,
-        panY,
+    const mode = getMode?.();
+    if (mode === "pan") {
+      const nextCamera = getPanZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorCx: 0,
+        anchorCy: 0,
       });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      } else {
+        const { panX, panY } = getFlatZoomPan(camera, effectiveFactor, 0, 0);
+        onCamera({
+          ...camera,
+          zoomScale: nextZoom,
+          panX,
+          panY,
+        });
+      }
+    } else if (mode === "project") {
+      const rect = canvas.getBoundingClientRect();
+      const anchorX = ((pointerA.clientX + pointerB.clientX) / 2) - rect.left;
+      const anchorY = ((pointerA.clientY + pointerB.clientY) / 2) - rect.top;
+      const nextCamera = getProjectZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorX,
+        anchorY,
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      }
+    } else if (mode === "rotate") {
+      const rect = canvas.getBoundingClientRect();
+      const anchorX = ((pointerA.clientX + pointerB.clientX) / 2) - rect.left;
+      const anchorY = ((pointerA.clientY + pointerB.clientY) / 2) - rect.top;
+      const nextCamera = getProjectZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorX,
+        anchorY,
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      } else {
+        onCamera({ ...camera, zoomScale: nextZoom });
+      }
     } else {
       onCamera({ ...camera, zoomScale: nextZoom });
     }
@@ -237,6 +352,9 @@ export function createGestureController(
   }
 
   canvas.addEventListener("pointerdown", (event) => {
+    if (canInteract && !canInteract()) {
+      return;
+    }
     if (event.pointerType === "touch" || event.pointerType === "pen") {
       activeGesturePointers.set(event.pointerId, {
         pointerId: event.pointerId,
@@ -267,6 +385,9 @@ export function createGestureController(
   });
 
   canvas.addEventListener("pointermove", (event) => {
+    if (canInteract && !canInteract()) {
+      return;
+    }
     if (activeGesturePointers.has(event.pointerId)) {
       activeGesturePointers.set(event.pointerId, {
         pointerId: event.pointerId,
@@ -297,12 +418,33 @@ export function createGestureController(
       startPointerDrag(event);
     }
 
-    if (getMode?.() === "pan") {
-      onCamera({
-        ...pointerDrag.startCamera,
-        panX: (pointerDrag.startCamera.panX ?? 0) + (event.clientX - pointerDrag.startX) / canvas.clientWidth,
-        panY: (pointerDrag.startCamera.panY ?? 0) + (event.clientY - pointerDrag.startY) / canvas.clientHeight,
+    const mode = getMode?.();
+    if (mode === "pan") {
+      const nextCamera = getPanCamera?.({
+        camera: pointerDrag.startCamera,
+        deltaX: (event.clientX - pointerDrag.startX) / canvas.clientWidth,
+        deltaY: (event.clientY - pointerDrag.startY) / canvas.clientHeight,
       });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      } else {
+        onCamera({
+          ...pointerDrag.startCamera,
+          panX: (pointerDrag.startCamera.panX ?? 0) + (event.clientX - pointerDrag.startX) / canvas.clientWidth,
+          panY: (pointerDrag.startCamera.panY ?? 0) + (event.clientY - pointerDrag.startY) / canvas.clientHeight,
+        });
+      }
+    } else if (mode === "project") {
+      const nextCamera = getProjectDragCamera?.({
+        startCamera: pointerDrag.startCamera,
+        startX: pointerDrag.startX,
+        startY: pointerDrag.startY,
+        currentX: event.clientX,
+        currentY: event.clientY,
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      }
     } else {
       const s = getDragSensitivity(pointerDrag.pointerType);
       onCamera({
@@ -356,19 +498,61 @@ export function createGestureController(
   });
 
   canvas.addEventListener("wheel", (event) => {
+    if (canInteract && !canInteract()) {
+      return;
+    }
     event.preventDefault();
     beginInteraction();
     const camera = getCamera();
     const requestedFactor = Math.exp(-event.deltaY * SCROLL_ZOOM_RATE);
     const { nextZoom, effectiveFactor } = getEffectiveZoom(camera, requestedFactor);
-    if (getMode?.() === "pan") {
-      const { panX, panY } = getFlatZoomPan(camera, effectiveFactor, 0, 0);
-      onCamera({
-        ...camera,
-        zoomScale: nextZoom,
-        panX,
-        panY,
+    const mode = getMode?.();
+    if (mode === "pan") {
+      const nextCamera = getPanZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorCx: 0,
+        anchorCy: 0,
       });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      } else {
+        const { panX, panY } = getFlatZoomPan(camera, effectiveFactor, 0, 0);
+        onCamera({
+          ...camera,
+          zoomScale: nextZoom,
+          panX,
+          panY,
+        });
+      }
+    } else if (mode === "project") {
+      const rect = canvas.getBoundingClientRect();
+      const anchorX = event.clientX - rect.left;
+      const anchorY = event.clientY - rect.top;
+      const nextCamera = getProjectZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorX,
+        anchorY,
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      }
+    } else if (mode === "rotate") {
+      const rect = canvas.getBoundingClientRect();
+      const anchorX = event.clientX - rect.left;
+      const anchorY = event.clientY - rect.top;
+      const nextCamera = getProjectZoomCamera?.({
+        camera,
+        nextZoomScale: nextZoom,
+        anchorX,
+        anchorY,
+      });
+      if (nextCamera) {
+        onCamera(nextCamera);
+      } else {
+        onCamera({ ...camera, zoomScale: nextZoom });
+      }
     } else {
       onCamera({ ...camera, zoomScale: nextZoom });
     }

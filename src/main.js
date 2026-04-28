@@ -15,7 +15,12 @@ import { createPaletteStore, normalizeHexColor } from "./core/palette-store.js";
 import { getSupabaseCatalog, getLayerFieldValues, loadLayerDatasets, loadLayerFromSupabase } from "./sources/supabase/layer-loader.js";
 import { createMapShare, loadMapShare } from "./sources/supabase/map-share-loader.js";
 import { createPrintView } from "./print-view.js";
-import { isValidProjectionId } from "./print/projection-adapters.js";
+import {
+  isValidProjectionId,
+  normalizeProjectionCamera,
+  PROJECTIONS,
+  sharesCameraAcrossLockStates,
+} from "./print/projection-adapters.js";
 import { mountColorControl } from "./ui/color-control.js";
 import "./styles.css";
 
@@ -46,6 +51,7 @@ const OCEAN_GEOJSON = {
 };
 const STORAGE_KEY = "earthlab.earth.style.v1";
 const MAP_NAME_KEY = "earthlab.mapName.v1";
+const PRINT_TITLE_KEY = "earthlab.printTitle.v1";
 const MAP_VIEW_KEY = "earthlab.mapView.v1";
 const VIEW_MODE_KEY = "earthlab.viewMode.v1";
 const PRINT_CAMERA_KEY = "earthlab.printCamera.v1";
@@ -54,6 +60,26 @@ const NATURAL_EARTH_CAMERA_KEY = "earthlab.naturalEarthCamera.v1";
 const LAND_QUALITY_KEY = "earthlab.landQuality.v1";
 const SHARE_QUERY_KEY = "share";
 const HORIZON_CLIP_EPSILON = 0.002;
+const DEFAULT_MAP_TITLE = "Layers";
+const PRINT_UNDO_LIMIT = 30;
+const PRINT_PREVIEW_INSET = 12;
+const PRINT_PREVIEW_RATIO = Math.sqrt(2);
+const PRINT_TITLE_FONT_FAMILIES = [
+  "Georgia, 'Times New Roman', serif",
+  "'Helvetica Neue', Arial, sans-serif",
+  "'Courier New', monospace",
+];
+const DEFAULT_PRINT_TITLE = Object.freeze({
+  text: DEFAULT_MAP_TITLE,
+  x: 0.04,
+  y: 0.04,
+  width: 0.92,
+  fontFamily: PRINT_TITLE_FONT_FAMILIES[0],
+  fontSize: 0.035,
+  fontWeight: 700,
+  lineHeight: 1.2,
+  color: "#000000",
+});
 const DEFAULT_MAP_VIEW = {
   center: [0, 18],
   zoom: 1.3,
@@ -126,9 +152,8 @@ const state = {
   loadingDynamicLayerIds: new Set(),
   viewMode: readViewMode(),
   printView: null,
-  printCamera: readPrintCamera(),
-  printProjection: readPrintProjection(),
-  naturalEarthCamera: readNaturalEarthCamera(),
+  printTitle: readPrintTitle(),
+  ...readPrintProjectionState(),
   landQuality: readLandQuality(),
   dynamicLayersRevision: 0,
   dynamicLayerDataRevision: 0,
@@ -139,6 +164,18 @@ const paletteControls = new Map();
 const dynamicPaletteControls = new Map();
 let layerStatePersistTimer = 0;
 let dynamicLayerDataPrintSnapshot = [];
+const mapTitleUi = {
+  wrapper: null,
+  label: null,
+  clearBtn: null,
+  anchorParent: null,
+  anchorNode: null,
+};
+const printUndoState = {
+  stack: [],
+  restoring: false,
+  signature: "",
+};
 
 function setBootStage(stage) {
   document.body.dataset.earthlabStage = stage;
@@ -301,66 +338,263 @@ function ensureReorderHandles(root = controls.layerStack) {
   });
 }
 
-function readPrintCamera() {
+function getCanonicalProjectionCamera(projection = "orthographic") {
+  return normalizeProjectionCamera(projection, null, { locked: false });
+}
+
+function getCanonicalFrameCamera(projection = "orthographic") {
+  return normalizeProjectionCamera(projection, null, { locked: true });
+}
+
+function normalizeProjectionCameraStore(cameraByProjection = null, locked = false) {
+  const normalized = {};
+  for (const { id } of PROJECTIONS) {
+    if (cameraByProjection && cameraByProjection[id]) {
+      normalized[id] = normalizeProjectionCamera(id, cameraByProjection[id], { locked });
+    }
+  }
+  return normalized;
+}
+
+function readLegacyProjectionState() {
+  let projection = "orthographic";
+  let orthographicCamera = getCanonicalProjectionCamera("orthographic");
+  let naturalEarthCamera = getCanonicalFrameCamera("naturalEarth");
+
+  try {
+    const rawProjection = window.localStorage?.getItem(PRINT_PROJECTION_KEY);
+    projection = isValidProjectionId(rawProjection) ? rawProjection : "orthographic";
+  } catch {
+    projection = "orthographic";
+  }
+
   try {
     const raw = window.localStorage?.getItem(PRINT_CAMERA_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    const zoomScale = Number(parsed?.zoomScale);
-    const rotationLon = Number(parsed?.rotationLon);
-    const rotationLat = Number(parsed?.rotationLat);
-    if (Number.isFinite(zoomScale) && Number.isFinite(rotationLon) && Number.isFinite(rotationLat)) {
-      return { zoomScale: Math.max(1, Math.min(16, zoomScale)), rotationLon, rotationLat };
+    if (parsed && typeof parsed === "object" && !("projection" in parsed) && !("unlockedByProjection" in parsed)) {
+      orthographicCamera = normalizeProjectionCamera("orthographic", parsed);
     }
   } catch {
-    // Fall through to default.
+    orthographicCamera = getCanonicalProjectionCamera("orthographic");
   }
-  return { zoomScale: 1, rotationLon: 0, rotationLat: 0 };
-}
 
-function persistPrintCamera() {
-  try {
-    window.localStorage?.setItem(PRINT_CAMERA_KEY, JSON.stringify(state.printCamera));
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function readPrintProjection() {
-  try {
-    const raw = window.localStorage?.getItem(PRINT_PROJECTION_KEY);
-    return isValidProjectionId(raw) ? raw : "orthographic";
-  } catch {
-    return "orthographic";
-  }
-}
-
-function persistPrintProjection() {
-  try {
-    window.localStorage?.setItem(PRINT_PROJECTION_KEY, state.printProjection);
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function readNaturalEarthCamera() {
   try {
     const raw = window.localStorage?.getItem(NATURAL_EARTH_CAMERA_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
-    const zoomScale = Number(parsed?.zoomScale);
-    const panX = Number(parsed?.panX);
-    const panY = Number(parsed?.panY);
-    if (Number.isFinite(zoomScale) && Number.isFinite(panX) && Number.isFinite(panY)) {
-      return { zoomScale: Math.max(1, Math.min(16, zoomScale)), panX, panY };
+    naturalEarthCamera = normalizeProjectionCamera("naturalEarth", parsed, { locked: true });
+  } catch {
+    naturalEarthCamera = getCanonicalFrameCamera("naturalEarth");
+  }
+
+  const lockedByProjection = {};
+  for (const { id } of PROJECTIONS) {
+    lockedByProjection[id] = id === "orthographic" || id === "lambertAzimuthalEqualArea"
+      ? getCanonicalFrameCamera(id)
+      : normalizeProjectionCamera(id, naturalEarthCamera, { locked: true });
+  }
+
+  const unlockedByProjection = {
+    orthographic: orthographicCamera,
+    lambertAzimuthalEqualArea: getCanonicalProjectionCamera("lambertAzimuthalEqualArea"),
+  };
+  for (const { id } of PROJECTIONS) {
+    if (id === "orthographic" || id === "lambertAzimuthalEqualArea") {
+      continue;
+    }
+    unlockedByProjection[id] = normalizeProjectionCamera(id, { zoomScale: naturalEarthCamera.zoomScale }, { locked: false });
+  }
+
+  return {
+    printProjection: projection,
+    printProjectionLocked: false,
+    printLockedCameras: normalizeProjectionCameraStore(lockedByProjection, true),
+    printUnlockedCameras: normalizeProjectionCameraStore(unlockedByProjection, false),
+  };
+}
+
+function readPrintProjectionState() {
+  try {
+    const raw = window.localStorage?.getItem(PRINT_CAMERA_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object" && ("projection" in parsed || "unlockedByProjection" in parsed || "lockedByProjection" in parsed || "locked" in parsed)) {
+      return {
+        printProjection: isValidProjectionId(parsed.projection) ? parsed.projection : "orthographic",
+        printProjectionLocked: parsed.locked !== false,
+        printLockedCameras: normalizeProjectionCameraStore(parsed.lockedByProjection, true),
+        printUnlockedCameras: normalizeProjectionCameraStore(parsed.unlockedByProjection, false),
+      };
+    }
+  } catch {
+    // Fall through to legacy migration.
+  }
+  return readLegacyProjectionState();
+}
+
+function persistPrintProjectionState() {
+  try {
+    window.localStorage?.setItem(PRINT_CAMERA_KEY, JSON.stringify({
+      projection: state.printProjection,
+      locked: state.printProjectionLocked,
+      lockedByProjection: state.printLockedCameras,
+      unlockedByProjection: state.printUnlockedCameras,
+    }));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function getActivePrintCamera() {
+  const store = state.printProjectionLocked ? state.printLockedCameras : state.printUnlockedCameras;
+  const locked = state.printProjectionLocked;
+  return store[state.printProjection]
+    ? normalizeProjectionCamera(state.printProjection, store[state.printProjection], { locked })
+    : locked
+      ? getCanonicalFrameCamera(state.printProjection)
+      : getCanonicalProjectionCamera(state.printProjection);
+}
+
+function ensureProjectionCameraForMode(projection = state.printProjection, locked = state.printProjectionLocked) {
+  const store = locked ? state.printLockedCameras : state.printUnlockedCameras;
+  if (store[projection]) {
+    return store[projection];
+  }
+  const nextCamera = locked
+    ? getCanonicalFrameCamera(projection)
+    : getCanonicalProjectionCamera(projection);
+  const nextStore = {
+    ...store,
+    [projection]: nextCamera,
+  };
+  if (locked) {
+    state.printLockedCameras = nextStore;
+  } else {
+    state.printUnlockedCameras = nextStore;
+  }
+  return nextCamera;
+}
+
+function setProjectionCameraForMode(projection, nextCamera, locked = state.printProjectionLocked) {
+  if (sharesCameraAcrossLockStates(projection)) {
+    const normalizedCamera = normalizeProjectionCamera(projection, nextCamera, { locked: false });
+    state.printLockedCameras = {
+      ...state.printLockedCameras,
+      [projection]: normalizedCamera,
+    };
+    state.printUnlockedCameras = {
+      ...state.printUnlockedCameras,
+      [projection]: normalizedCamera,
+    };
+    return;
+  }
+  const nextStore = locked ? state.printLockedCameras : state.printUnlockedCameras;
+  const normalizedCamera = normalizeProjectionCamera(projection, nextCamera, { locked });
+  if (locked) {
+    state.printLockedCameras = {
+      ...nextStore,
+      [projection]: normalizedCamera,
+    };
+    return;
+  }
+  state.printUnlockedCameras = {
+    ...nextStore,
+    [projection]: normalizedCamera,
+  };
+}
+
+function resetProjectionCamera(projection) {
+  const baselineCamera = normalizeProjectionCamera(projection, null, { locked: false });
+  if (sharesCameraAcrossLockStates(projection)) {
+    state.printLockedCameras = {
+      ...state.printLockedCameras,
+      [projection]: baselineCamera,
+    };
+    state.printUnlockedCameras = {
+      ...state.printUnlockedCameras,
+      [projection]: baselineCamera,
+    };
+    return baselineCamera;
+  }
+  state.printLockedCameras = {
+    ...state.printLockedCameras,
+    [projection]: normalizeProjectionCamera(projection, null, { locked: true }),
+  };
+  state.printUnlockedCameras = {
+    ...state.printUnlockedCameras,
+    [projection]: baselineCamera,
+  };
+  return state.printProjectionLocked
+    ? state.printLockedCameras[projection]
+    : state.printUnlockedCameras[projection];
+}
+
+function persistMapTitle() {
+  try {
+    window.localStorage?.setItem(MAP_NAME_KEY, getMapTitle());
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function readStoredMapTitle() {
+  try {
+    const value = window.localStorage?.getItem(MAP_NAME_KEY);
+    if (typeof value === "string" && value.length) {
+      return value;
     }
   } catch {
     // Fall through to default.
   }
-  return { zoomScale: 1, panX: 0, panY: 0 };
+  return DEFAULT_MAP_TITLE;
 }
 
-function persistNaturalEarthCamera() {
+function normalizePrintTitle(title, fallbackText = DEFAULT_MAP_TITLE) {
+  const normalizedText = typeof title?.text === "string"
+    ? title.text
+    : String(fallbackText ?? DEFAULT_MAP_TITLE);
+  const fontFamily = PRINT_TITLE_FONT_FAMILIES.includes(title?.fontFamily)
+    ? title.fontFamily
+    : DEFAULT_PRINT_TITLE.fontFamily;
+  const fontSize = Number(title?.fontSize);
+  const fontWeight = Number(title?.fontWeight);
+  const lineHeight = Number(title?.lineHeight);
+  const width = Number(title?.width);
+  const x = Number(title?.x);
+  const y = Number(title?.y);
+  const color = typeof title?.color === "string" && title.color.trim()
+    ? title.color.trim()
+    : DEFAULT_PRINT_TITLE.color;
+  return {
+    text: normalizedText,
+    x: Number.isFinite(x) ? clamp(x, 0, 0.9) : DEFAULT_PRINT_TITLE.x,
+    y: Number.isFinite(y) ? clamp(y, 0, 0.9) : DEFAULT_PRINT_TITLE.y,
+    width: Number.isFinite(width) ? clamp(width, 0.92, 0.92) : DEFAULT_PRINT_TITLE.width,
+    fontFamily,
+    fontSize: Number.isFinite(fontSize) ? clamp(fontSize, 0.018, 0.12) : DEFAULT_PRINT_TITLE.fontSize,
+    fontWeight: Number.isFinite(fontWeight) ? clamp(Math.round(fontWeight), 400, 900) : DEFAULT_PRINT_TITLE.fontWeight,
+    lineHeight: Number.isFinite(lineHeight) ? clamp(lineHeight, 1, 1.8) : DEFAULT_PRINT_TITLE.lineHeight,
+    color,
+  };
+}
+
+function readPrintTitle() {
+  const fallbackText = readStoredMapTitle();
   try {
-    window.localStorage?.setItem(NATURAL_EARTH_CAMERA_KEY, JSON.stringify(state.naturalEarthCamera));
+    const raw = window.localStorage?.getItem(PRINT_TITLE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return normalizePrintTitle(parsed, fallbackText);
+  } catch {
+    return normalizePrintTitle(null, fallbackText);
+  }
+}
+
+function persistPrintTitle() {
+  try {
+    window.localStorage?.setItem(MAP_NAME_KEY, getMapTitle());
+    window.localStorage?.setItem(PRINT_TITLE_KEY, JSON.stringify(state.printTitle));
   } catch {
     // Ignore storage failures.
   }
@@ -397,6 +631,8 @@ function persistLandQuality() {
   } catch {
     // Ignore storage failures.
   }
+  pushPrintUndoSnapshot();
+  syncPrintUndoAvailability();
 }
 
 function readLayerState() {
@@ -417,6 +653,7 @@ function writeLayerStateToStorage() {
 }
 
 function persistLayerState({ immediate = false } = {}) {
+  pushPrintUndoSnapshot();
   if (layerStatePersistTimer) {
     window.clearTimeout(layerStatePersistTimer);
     layerStatePersistTimer = 0;
@@ -516,16 +753,114 @@ function normalizeMapView(view = DEFAULT_MAP_VIEW) {
 }
 
 function getMapTitle() {
-  return document.getElementById("mapNameLabel")?.textContent?.trim() ?? "";
+  return String(state.printTitle?.text ?? document.getElementById("mapNameLabel")?.textContent ?? "").trim();
 }
 
 function setMapTitle(title) {
+  state.printTitle = normalizePrintTitle({ ...state.printTitle, text: String(title ?? "") }, title);
   const label = document.getElementById("mapNameLabel");
   if (!label) {
     return;
   }
-  label.textContent = String(title ?? "");
+  label.textContent = state.printTitle.text;
   label.dataset.empty = String(label.textContent.trim() === "");
+}
+
+function capturePrintUndoSnapshot() {
+  return {
+    layerState: structuredClone(state.layerState),
+    printProjection: state.printProjection,
+    printProjectionLocked: state.printProjectionLocked,
+    printLockedCameras: structuredClone(state.printLockedCameras),
+    printUnlockedCameras: structuredClone(state.printUnlockedCameras),
+    landQuality: state.landQuality,
+    printTitle: structuredClone(state.printTitle),
+  };
+}
+
+function getPrintUndoSignature(snapshot) {
+  return JSON.stringify(snapshot);
+}
+
+function canUndoPrint() {
+  return printUndoState.stack.length > 1;
+}
+
+function syncPrintUndoAvailability() {
+  state.printView?.setProps({ canUndo: canUndoPrint() });
+}
+
+function resetPrintUndoHistory() {
+  printUndoState.stack = [];
+  printUndoState.signature = "";
+  syncPrintUndoAvailability();
+}
+
+function pushPrintUndoSnapshot() {
+  if (state.viewMode !== "print" || printUndoState.restoring) {
+    return;
+  }
+  const snapshot = capturePrintUndoSnapshot();
+  const signature = getPrintUndoSignature(snapshot);
+  if (signature === printUndoState.signature) {
+    return;
+  }
+  printUndoState.stack.push(snapshot);
+  if (printUndoState.stack.length > PRINT_UNDO_LIMIT) {
+    printUndoState.stack.shift();
+  }
+  printUndoState.signature = signature;
+  syncPrintUndoAvailability();
+}
+
+function ensurePrintUndoBaseline() {
+  if (state.viewMode !== "print" || printUndoState.stack.length > 0 || printUndoState.restoring) {
+    return;
+  }
+  pushPrintUndoSnapshot();
+}
+
+function applyPrintUndoSnapshot(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  printUndoState.restoring = true;
+  state.layerState = normalizeLayerState(structuredClone(snapshot.layerState));
+  state.printProjection = isValidProjectionId(snapshot.printProjection) ? snapshot.printProjection : "orthographic";
+  state.printProjectionLocked = snapshot.printProjectionLocked !== false;
+  state.printLockedCameras = normalizeProjectionCameraStore(snapshot.printLockedCameras, true);
+  state.printUnlockedCameras = normalizeProjectionCameraStore(snapshot.printUnlockedCameras, false);
+  state.landQuality = snapshot.landQuality === "high" ? "high" : "low";
+  state.printTitle = normalizePrintTitle(snapshot.printTitle, getMapTitle());
+  setMapTitle(state.printTitle.text);
+  state.dynamicLayersRevision += 1;
+  refreshDynamicLayerDataPrintSnapshot();
+  invalidateDynamicDeckLayerCache();
+  state.dynamicExpandedLayerIds.clear();
+  state.activeDynamicStylePanels.clear();
+  state.expandedFilterIds.clear();
+  state.activeFilterChannelPanels.clear();
+  syncLandQualityControls();
+  applyAppearanceStyles();
+  applyLandQuality();
+  syncControlsFromState();
+  syncPrintView();
+  persistLayerState({ immediate: true });
+  persistPrintProjectionState();
+  persistLandQuality();
+  persistPrintTitle();
+  printUndoState.restoring = false;
+}
+
+function undoPrintSnapshot() {
+  if (!canUndoPrint()) {
+    return;
+  }
+  printUndoState.stack.pop();
+  const snapshot = printUndoState.stack[printUndoState.stack.length - 1];
+  printUndoState.signature = getPrintUndoSignature(snapshot);
+  applyPrintUndoSnapshot(snapshot);
+  syncPrintUndoAvailability();
 }
 
 function buildShareSnapshot() {
@@ -534,6 +869,7 @@ function buildShareSnapshot() {
     v: SHARE_SNAPSHOT_VERSION,
     meta: {
       title: getMapTitle(),
+      printTitle: structuredClone(state.printTitle),
     },
     mv: {
       c: mapView.center,
@@ -559,6 +895,7 @@ function normalizeShareSnapshot(snapshot) {
     v: SHARE_SNAPSHOT_VERSION,
     meta: {
       title: String(snapshot.meta?.title ?? ""),
+      printTitle: normalizePrintTitle(snapshot.meta?.printTitle, String(snapshot.meta?.title ?? "")),
     },
     mv: normalizeMapView({
       center: snapshot.mv?.c,
@@ -590,7 +927,8 @@ function applyShareSnapshot(snapshot) {
   state.loadingDynamicLayerIds.clear();
   state.dynamicExpandedLayerIds.clear();
   state.activeDynamicStylePanels.clear();
-  setMapTitle(normalized.meta?.title ?? "");
+  state.printTitle = normalizePrintTitle(normalized.meta?.printTitle, normalized.meta?.title ?? "");
+  setMapTitle(state.printTitle.text);
 
   return normalized.mv;
 }
@@ -1822,12 +2160,92 @@ function getScreenBackgroundFill() {
   return `rgb(${Math.round(screenRgb.r * screenOpacity)}, ${Math.round(screenRgb.g * screenOpacity)}, ${Math.round(screenRgb.b * screenOpacity)})`;
 }
 
+function getPrintMapTitle() {
+  const title = normalizePrintTitle(state.printTitle, getMapTitle());
+  if (!title.text.trim() || title.text.trim() === DEFAULT_MAP_TITLE) {
+    return {
+      ...title,
+      text: "",
+    };
+  }
+  return title;
+}
+
+function getPrintPreviewFrame(width, height) {
+  const maxWidth = Math.max(0, width - (PRINT_PREVIEW_INSET * 2));
+  const maxHeight = Math.max(0, height - (PRINT_PREVIEW_INSET * 2));
+  let frameHeight = maxHeight;
+  let frameWidth = frameHeight * PRINT_PREVIEW_RATIO;
+  if (frameWidth > maxWidth) {
+    frameWidth = maxWidth;
+    frameHeight = frameWidth / PRINT_PREVIEW_RATIO;
+  }
+  const x = (width - frameWidth) / 2;
+  const y = (height - frameHeight) / 2;
+  return { x, y, width: frameWidth, height: frameHeight };
+}
+
+function syncMapTitlePresentation() {
+  const { wrapper, label, anchorParent, anchorNode } = mapTitleUi;
+  if (!wrapper || !label || !controls.app) {
+    return;
+  }
+  const isPrint = state.viewMode === "print";
+  if (!isPrint) {
+    if (anchorParent && anchorNode && wrapper.parentNode !== anchorParent) {
+      anchorParent.insertBefore(wrapper, anchorNode.nextSibling);
+    }
+    wrapper.classList.remove("is-print-title");
+    label.classList.remove("is-print-title");
+    wrapper.style.position = "";
+    wrapper.style.left = "";
+    wrapper.style.top = "";
+    wrapper.style.width = "";
+    wrapper.style.maxWidth = "";
+    wrapper.style.zIndex = "";
+    wrapper.style.pointerEvents = "";
+    label.style.fontFamily = "";
+    label.style.fontSize = "";
+    label.style.fontWeight = "";
+    label.style.lineHeight = "";
+    label.style.color = "";
+    return;
+  }
+
+  if (wrapper.parentNode !== controls.app) {
+    controls.app.append(wrapper);
+  }
+  const title = getPrintMapTitle();
+  const frame = getPrintPreviewFrame(controls.app.clientWidth, controls.app.clientHeight);
+  const x = frame.x + (frame.width * title.x);
+  const y = frame.y + (frame.height * title.y);
+  const titleWidth = Math.max(96, frame.width * title.width);
+  const fontSizePx = Math.max(18, frame.width * title.fontSize);
+
+  wrapper.classList.add("is-print-title");
+  label.classList.add("is-print-title");
+  wrapper.style.position = "absolute";
+  wrapper.style.left = `${x}px`;
+  wrapper.style.top = `${y}px`;
+  wrapper.style.width = `${titleWidth}px`;
+  wrapper.style.maxWidth = `${titleWidth}px`;
+  wrapper.style.zIndex = "3";
+  wrapper.style.pointerEvents = "auto";
+  label.style.fontFamily = title.fontFamily;
+  label.style.fontSize = `${fontSizePx}px`;
+  label.style.fontWeight = String(title.fontWeight);
+  label.style.lineHeight = String(title.lineHeight);
+  label.style.color = title.color;
+}
+
 function syncPrintView() {
   if (!state.printView) {
     return;
   }
   state.printView.setProps({
     projection: state.printProjection,
+    locked: state.printProjectionLocked,
+    activeCamera: getActivePrintCamera(),
     backgroundFill: getScreenBackgroundFill(),
     oceanFill: getChannel("ocean", "fill"),
     landFill: getChannel("land", "fill"),
@@ -1841,9 +2259,21 @@ function syncPrintView() {
     dynamicLayerData: dynamicLayerDataPrintSnapshot,
     dynamicLayerDataRevision: state.dynamicLayerDataRevision,
     earthRenderOrder: [...normalizeRenderOrder(state.layerState.order)],
-    printCamera: { ...state.printCamera },
-    naturalEarthCamera: { ...state.naturalEarthCamera },
+    printTitle: getPrintMapTitle(),
+    showCanvasTitle: false,
+    canUndo: canUndoPrint(),
   });
+  syncMapTitlePresentation();
+}
+
+function setSurfaceVisibility(element, visible) {
+  if (!element) {
+    return;
+  }
+  element.hidden = false;
+  element.style.visibility = visible ? "visible" : "hidden";
+  element.style.pointerEvents = visible ? "auto" : "none";
+  element.setAttribute("aria-hidden", String(!visible));
 }
 
 function ensurePrintView() {
@@ -1853,17 +2283,45 @@ function ensurePrintView() {
   state.printView = createPrintView({
     mount: controls.printView,
     onCameraChange(nextCamera) {
-      state.printCamera = { ...nextCamera };
-      persistPrintCamera();
+      setProjectionCameraForMode(state.printProjection, nextCamera, state.printProjectionLocked);
+      persistPrintProjectionState();
+      pushPrintUndoSnapshot();
+      syncPrintUndoAvailability();
     },
-    onNaturalEarthCameraChange(nextCamera) {
-      state.naturalEarthCamera = { ...nextCamera };
-      persistNaturalEarthCamera();
-    },
-    onProjectionChange(nextProjection) {
+    onProjectionChange(nextProjection, nextCamera, nextLocked) {
       state.printProjection = nextProjection;
-      persistPrintProjection();
+      state.printProjectionLocked = nextLocked !== false;
+      setProjectionCameraForMode(nextProjection, nextCamera, state.printProjectionLocked);
+      persistPrintProjectionState();
       syncPrintView();
+      pushPrintUndoSnapshot();
+    },
+    onProjectionLockChange(nextLocked, nextCamera) {
+      state.printProjectionLocked = nextLocked !== false;
+      setProjectionCameraForMode(state.printProjection, nextCamera, state.printProjectionLocked);
+      ensureProjectionCameraForMode(state.printProjection, state.printProjectionLocked);
+      persistPrintProjectionState();
+      syncPrintView();
+      pushPrintUndoSnapshot();
+    },
+    onProjectionReset(projection) {
+      resetProjectionCamera(projection);
+      persistPrintProjectionState();
+      syncPrintView();
+      pushPrintUndoSnapshot();
+      syncPrintUndoAvailability();
+    },
+    onTitleChange(nextTitle, { commit = false } = {}) {
+      state.printTitle = normalizePrintTitle(nextTitle, getMapTitle());
+      setMapTitle(state.printTitle.text);
+      syncPrintView();
+      if (commit) {
+        persistPrintTitle();
+        pushPrintUndoSnapshot();
+      }
+    },
+    onUndo() {
+      undoPrintSnapshot();
     },
   });
 }
@@ -1872,45 +2330,13 @@ function prewarmPrintView() {
   if (state.printView || !controls.printView) {
     return;
   }
-  const wasHidden = controls.printView.hidden;
   const previousVisibility = controls.printView.style.visibility;
   const previousPointerEvents = controls.printView.style.pointerEvents;
-  if (wasHidden) {
-    controls.printView.style.visibility = "hidden";
-    controls.printView.style.pointerEvents = "none";
-    controls.printView.hidden = false;
-  }
+  setSurfaceVisibility(controls.printView, false);
   ensurePrintView();
   syncPrintView();
-  if (wasHidden) {
-    controls.printView.hidden = true;
-    controls.printView.style.visibility = previousVisibility;
-    controls.printView.style.pointerEvents = previousPointerEvents;
-  }
-}
-
-const ORTHO_BASE_LON = -20;
-const ORTHO_BASE_LAT = 10;
-
-function printCameraFromMapView() {
-  if (!state.map) return;
-  const center = state.map.getCenter();
-  const zoom = state.map.getZoom();
-  state.printCamera = {
-    rotationLon: -center.lng - 20,
-    rotationLat: 10 - center.lat,
-    zoomScale: Math.max(1, Math.min(16, Math.pow(2, zoom - 1))),
-  };
-  persistPrintCamera();
-}
-
-function mapViewFromPrintCamera() {
-  if (!state.map) return;
-  const { rotationLon, rotationLat, zoomScale } = state.printCamera;
-  const lng = ORTHO_BASE_LON - rotationLon;
-  const lat = ORTHO_BASE_LAT - rotationLat;
-  const zoom = Math.log2(Math.max(1, zoomScale)) + 1;
-  state.map.jumpTo({ center: [lng, lat], zoom });
+  controls.printView.style.visibility = previousVisibility;
+  controls.printView.style.pointerEvents = previousPointerEvents;
 }
 
 function syncViewMode() {
@@ -1919,8 +2345,9 @@ function syncViewMode() {
     if (controls.viewModeBtn) {
       controls.viewModeBtn.textContent = "Print";
     }
-    controls.map.hidden = false;
-    controls.printView.hidden = true;
+    setSurfaceVisibility(controls.map, true);
+    setSurfaceVisibility(controls.printView, false);
+    syncMapTitlePresentation();
     return;
   }
   document.body.dataset.earthlabMode = state.viewMode;
@@ -1928,19 +2355,22 @@ function syncViewMode() {
     controls.viewModeBtn.textContent = state.viewMode === "print" ? "Web" : "Print";
   }
   const isPrint = state.viewMode === "print";
-  controls.map.hidden = isPrint;
-  controls.printView.hidden = !isPrint;
+  setSurfaceVisibility(controls.map, !isPrint);
+  setSurfaceVisibility(controls.printView, isPrint);
   if (isPrint) {
-    printCameraFromMapView();
     ensurePrintView();
     syncPrintView();
+    ensurePrintUndoBaseline();
+    syncMapTitlePresentation();
     return;
   }
-  mapViewFromPrintCamera();
-  window.setTimeout(() => {
+  resetPrintUndoHistory();
+  syncMapTitlePresentation();
+  window.requestAnimationFrame(() => {
     state.map?.resize();
+    state.map?.triggerRepaint?.();
     updateOverlayLayersOnly();
-  }, 0);
+  });
 }
 
 function mountPaletteControls() {
@@ -4317,13 +4747,20 @@ function bindMapName() {
     return;
   }
 
-  const saved = localStorage.getItem(MAP_NAME_KEY);
-  if (saved && !label.textContent.trim()) label.textContent = saved;
+  if (!label.textContent.trim() || label.textContent.trim() === DEFAULT_MAP_TITLE) {
+    label.textContent = state.printTitle.text;
+  }
 
   const wrapper = document.createElement("span");
   wrapper.className = "earthlab-kicker-wrap";
   label.insertAdjacentElement("beforebegin", wrapper);
+  const anchorNode = document.createComment("earthlab-map-title-anchor");
+  wrapper.parentNode.insertBefore(anchorNode, wrapper);
   wrapper.append(label);
+  mapTitleUi.wrapper = wrapper;
+  mapTitleUi.label = label;
+  mapTitleUi.anchorParent = wrapper.parentNode;
+  mapTitleUi.anchorNode = anchorNode;
   wrapper.addEventListener("pointerdown", (e) => {
     if (e.target === wrapper) {
       e.preventDefault();
@@ -4335,32 +4772,46 @@ function bindMapName() {
   clearBtn.type = "button";
   clearBtn.className = "earthlab-kicker-clear";
   clearBtn.textContent = "×";
-  clearBtn.hidden = true;
   wrapper.append(clearBtn);
+  mapTitleUi.clearBtn = clearBtn;
 
   function syncEmpty() {
     label.dataset.empty = String(label.textContent.trim() === "");
   }
 
+  function syncTitleStateFromLabel({ persist = false, commitUndo = false } = {}) {
+    state.printTitle = normalizePrintTitle({ ...state.printTitle, text: label.textContent ?? "" }, label.textContent ?? "");
+    syncEmpty();
+    syncPrintView();
+    syncMapTitlePresentation();
+    if (persist) {
+      persistPrintTitle();
+    }
+    if (commitUndo) {
+      pushPrintUndoSnapshot();
+    }
+  }
+
   syncEmpty();
 
-  label.addEventListener("input", syncEmpty);
+  label.addEventListener("input", () => {
+    syncTitleStateFromLabel();
+  });
 
   label.addEventListener("focus", () => {
-    clearBtn.hidden = false;
+    wrapper.classList.add("is-selected");
   });
 
   label.addEventListener("blur", (e) => {
     if (e.relatedTarget === clearBtn) return;
-    clearBtn.hidden = true;
-    localStorage.setItem(MAP_NAME_KEY, label.textContent.trim());
-    syncEmpty();
+    wrapper.classList.remove("is-selected");
+    syncTitleStateFromLabel({ persist: true, commitUndo: true });
   });
 
   clearBtn.addEventListener("mousedown", (e) => e.preventDefault());
   clearBtn.addEventListener("click", () => {
     label.textContent = "";
-    syncEmpty();
+    syncTitleStateFromLabel({ persist: true, commitUndo: true });
     label.focus();
   });
 
@@ -4371,6 +4822,8 @@ function bindMapName() {
     }
   });
 
+  window.addEventListener("resize", syncMapTitlePresentation);
+  syncMapTitlePresentation();
   document.body.dataset.earthlabUi = "ready";
 }
 

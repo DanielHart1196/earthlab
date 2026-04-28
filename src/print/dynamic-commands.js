@@ -10,6 +10,14 @@ function featureCollection(features) {
   return { type: "FeatureCollection", features };
 }
 
+function geometryRecordFromFeatures(features) {
+  return {
+    polygon: featureCollection(features.filter((f) => getFeatureGeometryFamily(f) === "polygon")),
+    line: featureCollection(features.filter((f) => getFeatureGeometryFamily(f) === "line")),
+    point: featureCollection(features.filter((f) => getFeatureGeometryFamily(f) === "point")),
+  };
+}
+
 function filterMatchingFeatures(features, field, value) {
   return features.filter((f) => {
     const props = f?.properties;
@@ -17,14 +25,24 @@ function filterMatchingFeatures(features, field, value) {
   });
 }
 
-function appendDynamicLayerGroup(target, geojson, channels, channelOrder) {
-  const features = geojson.features ?? [];
-  const polygonData = featureCollection(features.filter((f) => getFeatureGeometryFamily(f) === "polygon"));
-  const lineData = featureCollection(features.filter((f) => {
-    const family = getFeatureGeometryFamily(f);
-    return family === "polygon" || family === "line";
-  }));
-  const pointData = featureCollection(features.filter((f) => getFeatureGeometryFamily(f) === "point"));
+function filterGeometryRecord(geometryRecord, excludedFeatures) {
+  if (!excludedFeatures?.size) {
+    return geometryRecord;
+  }
+  return {
+    polygon: featureCollection((geometryRecord?.polygon?.features ?? []).filter((f) => !excludedFeatures.has(f))),
+    line: featureCollection((geometryRecord?.line?.features ?? []).filter((f) => !excludedFeatures.has(f))),
+    point: featureCollection((geometryRecord?.point?.features ?? []).filter((f) => !excludedFeatures.has(f))),
+  };
+}
+
+function appendDynamicLayerGroup(target, geometryRecord, channels, channelOrder) {
+  const polygonFeatures = geometryRecord?.polygon?.features ?? [];
+  const lineFeatures = geometryRecord?.line?.features ?? [];
+  const pointFeatures = geometryRecord?.point?.features ?? [];
+  const polygonData = featureCollection(polygonFeatures);
+  const lineData = featureCollection([...polygonFeatures, ...lineFeatures]);
+  const pointData = featureCollection(pointFeatures);
 
   const layerMap = {
     fill: polygonData.features.length ? { kind: "fill", geojson: polygonData, fill: channels.fill } : null,
@@ -49,6 +67,7 @@ export function buildDynamicDrawCommands(dynamicLayers, dynamicLayerData) {
     if (!dataRecord?.geojson) return [];
 
     const allFeatures = dataRecord.geojson.features ?? [];
+    const baseGeometry = dataRecord.geometry ?? geometryRecordFromFeatures(allFeatures);
     const activeFilters = (entry.filters ?? []).filter((f) => f.visible !== false && f.field && f.value != null);
     const excludedFeatures = new Set();
     if (activeFilters.length) {
@@ -64,17 +83,24 @@ export function buildDynamicDrawCommands(dynamicLayers, dynamicLayerData) {
       }
     }
 
-    const baseFeatures = excludedFeatures.size
-      ? allFeatures.filter((f) => !excludedFeatures.has(f))
-      : allFeatures;
     const commands = [];
-    appendDynamicLayerGroup(commands, featureCollection(baseFeatures), entry.channels ?? {}, entry.channelOrder);
+    appendDynamicLayerGroup(
+      commands,
+      filterGeometryRecord(baseGeometry, excludedFeatures),
+      entry.channels ?? {},
+      entry.channelOrder,
+    );
 
     for (const filter of [...(entry.filters ?? [])].reverse()) {
       if (filter.visible === false || !filter.field || filter.value == null) continue;
       const matchingFeatures = filterMatchingFeatures(allFeatures, filter.field, filter.value);
       if (!matchingFeatures.length) continue;
-      appendDynamicLayerGroup(commands, featureCollection(matchingFeatures), filter.channels ?? {}, filter.channelOrder);
+      appendDynamicLayerGroup(
+        commands,
+        geometryRecordFromFeatures(matchingFeatures),
+        filter.channels ?? {},
+        filter.channelOrder,
+      );
     }
 
     return commands;

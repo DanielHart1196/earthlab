@@ -5,5 +5,6 @@ export const PRINT_WORKER_MESSAGE = {
   SET_INTERACTION: "set-interaction",
   RENDER: "render",
   FRAME: "frame",
+  PERF: "perf",
   DISPOSE: "dispose",
 };

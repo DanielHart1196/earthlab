@@ -333,3 +333,72 @@ Responsibilities:
 For orthographic specifically, the hard part is correct visible-hemisphere clipping and valid ring reconstruction after clipping.
 
 That is the main blocker to a robust long-term print renderer, and it should be solved in the projection pipeline rather than patched at the rendering layer.
+
+### Unified Print Camera Model
+
+Print mode should move toward one shared interaction model for orthographic and flat projections.
+
+Desired behavior:
+
+- all print projections start in a canonical full-map fit state
+- this default state is treated as `locked`
+- user can explicitly `unlock` the projection to move within that projection
+- relocking returns to the canonical full-map fit for that projection
+
+Recommended rules:
+
+- switching projection defaults to locked full-map fit
+- unlocked camera state should be stored per projection
+- relocking should discard the transient unlocked position and return to the canonical fit
+
+This should replace the current conceptual split where orthographic behaves like a movable globe camera and flat projections behave like a fitted map with pan/zoom layered on top.
+
+### Print Document State
+
+If print mode is going to support undo plus future movable/resizable print elements, it needs a dedicated print document model rather than ad hoc state in DOM nodes and render helpers.
+
+Recommended structure:
+
+- `printDocument.layout`
+  - paper ratio
+  - frame inset
+  - preview overlay visibility
+- `printDocument.camera`
+  - projection
+  - locked/unlocked state
+  - per-projection unlocked camera
+  - canonical fit state
+- `printDocument.items`
+  - title
+  - legend
+  - future annotations / scalebar / north arrow
+
+Example title fields:
+
+- `text`
+- `x`
+- `y`
+- `width`
+- `fontSize`
+- `fontFamily`
+- `fontWeight`
+- `color`
+- `visible`
+
+### Undo Direction
+
+Undo should be snapshot-based, not command-based.
+
+Recommended undo scope for print mode:
+
+- `printDocument`
+- `layerState`
+- land quality
+
+Guidelines:
+
+- only capture undo history while in print mode
+- restore title and future print annotations through `printDocument`, not through DOM-specific special cases
+- do not include derived loaded dataset payloads in history snapshots; restore config/state and reuse loaded data already in memory
+
+This gives a scalable path for future print features like title resizing, title movement, legend placement, and projection unlock state without having to keep bolting special cases onto `print-view.js`.

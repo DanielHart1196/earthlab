@@ -13,12 +13,32 @@ function sameArray(a, b) {
   return true;
 }
 
+function sameValue(a, b) {
+  return a === b || (Number.isNaN(a) && Number.isNaN(b));
+}
+
+function sameStyleChannel(a, b) {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return a === b;
+  }
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (!sameValue(a[key], b[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function sameScene(a, b) {
   return a.backgroundFill === b.backgroundFill
-    && a.oceanFill === b.oceanFill
-    && a.landFill === b.landFill
-    && a.landLine === b.landLine
-    && a.graticulesLine === b.graticulesLine
+    && sameStyleChannel(a.oceanFill, b.oceanFill)
+    && sameStyleChannel(a.landFill, b.landFill)
+    && sameStyleChannel(a.landLine, b.landLine)
+    && sameStyleChannel(a.graticulesLine, b.graticulesLine)
     && a.land === b.land
     && a.interactionLand === b.interactionLand
     && a.graticules === b.graticules

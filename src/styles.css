@@ -58,10 +58,8 @@ body {
   position: absolute;
   inset: 0;
   z-index: 0;
-}
-
-.earthlab-print-view[hidden] {
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .earthlab-projection-btn {
@@ -82,6 +80,162 @@ body {
   display: inline-flex;
   align-items: center;
   touch-action: manipulation;
+}
+
+.earthlab-projection-controls {
+  position: absolute;
+  right: 18px;
+  bottom: var(--share-bottom-inset);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.earthlab-projection-controls .earthlab-projection-btn {
+  position: static;
+  pointer-events: auto;
+}
+
+.earthlab-lock-btn {
+  min-width: 0;
+}
+
+.earthlab-print-title-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.earthlab-print-title-toolbar {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  background: var(--screen-bg);
+  pointer-events: auto;
+}
+
+.earthlab-debug-panel {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 20;
+  max-width: min(420px, calc(100vw - 16px));
+  background: rgba(255, 255, 255, 0.92);
+  color: #000000;
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  pointer-events: auto;
+  white-space: pre-wrap;
+}
+
+.earthlab-debug-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+  user-select: none;
+}
+
+.earthlab-debug-pre {
+  margin: 6px 0 0;
+  max-height: 40dvh;
+  overflow: auto;
+}
+
+.earthlab-print-title-select,
+.earthlab-print-title-size,
+.earthlab-print-title-move {
+  font: inherit;
+}
+
+.earthlab-print-title-select,
+.earthlab-print-title-move {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #000000;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.earthlab-print-title-size {
+  width: 104px;
+}
+
+.earthlab-print-title-move {
+  cursor: grab;
+}
+
+.earthlab-print-title-shell {
+  position: absolute;
+  min-width: 96px;
+  pointer-events: auto;
+  border-radius: var(--radius);
+  box-sizing: border-box;
+}
+
+.earthlab-print-title-shell.is-selected {
+  outline: 1px dashed rgba(0, 0, 0, 0.28);
+  outline-offset: 0;
+}
+
+.earthlab-print-title-shell.is-dragging {
+  opacity: 0.88;
+}
+
+.earthlab-print-title-wrap {
+  position: relative;
+  display: block;
+  min-width: 96px;
+  width: 100%;
+  padding: 0;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.78);
+  box-sizing: border-box;
+}
+
+.earthlab-print-title-editor {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  outline: none;
+  cursor: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+}
+
+.earthlab-print-title-editor[data-empty="true"]::before {
+  content: "Title";
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.earthlab-print-title-clear {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  color: #000000;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  position: absolute;
+  top: 4px;
+  right: -18px;
+  width: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.earthlab-print-title-shell.is-selected .earthlab-print-title-clear {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .earthlab-projection-btn:hover {
@@ -188,6 +342,11 @@ body {
   min-width: 0;
 }
 
+.earthlab-kicker-wrap.is-print-title {
+  flex: none;
+  position: relative;
+}
+
 .earthlab-kicker {
   display: block;
   flex: 0 1 auto;
@@ -204,6 +363,19 @@ body {
   overflow-wrap: anywhere;
   background: var(--screen-bg);
   border: none;
+}
+
+.earthlab-kicker.is-print-title {
+  width: 100%;
+  background: transparent;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.earthlab-kicker.is-print-title:focus {
+  background: rgba(255, 255, 255, 0.72);
+  outline: 1px dashed rgba(0, 0, 0, 0.28);
+  outline-offset: 0;
 }
 
 .earthlab-kicker[data-empty="true"] {
@@ -227,6 +399,22 @@ body {
   -webkit-text-fill-color: #000000;
   flex-shrink: 0;
   align-self: center;
+}
+
+.earthlab-kicker-wrap.is-print-title .earthlab-kicker-clear {
+  position: absolute;
+  top: 2px;
+  right: -18px;
+  align-self: flex-start;
+  margin-top: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.earthlab-kicker-wrap.is-print-title.is-selected .earthlab-kicker-clear {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .earthlab-panel-header h1 {
